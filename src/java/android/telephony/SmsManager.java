@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
+ * Copyright (c) 2012, The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +17,15 @@
 
 package android.telephony;
 
+import android.app.ActivityThread;
 import android.app.PendingIntent;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.text.TextUtils;
 
 import com.android.internal.telephony.ISms;
-import com.android.internal.telephony.IccConstants;
 import com.android.internal.telephony.SmsRawData;
+import com.android.internal.telephony.uicc.IccConstants;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -84,7 +86,62 @@ public final class SmsManager {
         try {
             ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
             if (iccISms != null) {
-                iccISms.sendText(destinationAddress, scAddress, text, sentIntent, deliveryIntent);
+                iccISms.sendText(ActivityThread.currentPackageName(), destinationAddress,
+                        scAddress, text, sentIntent, deliveryIntent);
+            }
+        } catch (RemoteException ex) {
+            // ignore it
+        }
+    }
+
+    /**
+     * Send a text based SMS.
+     *
+     * @param destinationAddress the address to send the message to
+     * @param scAddress is the service center address or null to use
+     *  the current default SMSC
+     * @param text the body of the message to send
+     * @param sentIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is successfully sent, or failed.
+     *  The result code will be <code>Activity.RESULT_OK</code> for success,
+     *  or one of these errors:<br>
+     *  <code>RESULT_ERROR_GENERIC_FAILURE</code><br>
+     *  <code>RESULT_ERROR_RADIO_OFF</code><br>
+     *  <code>RESULT_ERROR_NULL_PDU</code><br>
+     *  For <code>RESULT_ERROR_GENERIC_FAILURE</code> the sentIntent may include
+     *  the extra "errorCode" containing a radio technology specific value,
+     *  generally only useful for troubleshooting.<br>
+     *  The per-application based SMS control checks sentIntent. If sentIntent
+     *  is NULL the caller will be checked against all unknown applications,
+     *  which cause smaller number of SMS to be sent in checking period.
+     * @param deliveryIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is delivered to the recipient.  The
+     *  raw pdu of the status report is in the extended data ("pdu").
+     * @param priority Priority level of the message
+     *
+     * @throws IllegalArgumentException if destinationAddress or text are empty
+     * {@hide}
+     */
+    public void sendTextMessageWithPriority(
+            String destinationAddress, String scAddress, String text,
+            PendingIntent sentIntent, PendingIntent deliveryIntent, int priority) {
+        if (TextUtils.isEmpty(destinationAddress)) {
+            throw new IllegalArgumentException("Invalid destinationAddress");
+        }
+
+        if (TextUtils.isEmpty(text)) {
+            throw new IllegalArgumentException("Invalid message body");
+        }
+
+        if (priority < 0 || priority > 3) {
+            throw new IllegalArgumentException("Invalid priority");
+        }
+
+        try {
+            ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
+            if (iccISms != null) {
+                iccISms.sendTextWithPriority(ActivityThread.currentPackageName(), destinationAddress, scAddress, text, sentIntent,
+                        deliveryIntent, priority);
             }
         } catch (RemoteException ex) {
             // ignore it
@@ -154,7 +211,8 @@ public final class SmsManager {
             try {
                 ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
                 if (iccISms != null) {
-                    iccISms.sendMultipartText(destinationAddress, scAddress, parts,
+                    iccISms.sendMultipartText(ActivityThread.currentPackageName(),
+                            destinationAddress, scAddress, parts,
                             sentIntents, deliveryIntents);
                 }
             } catch (RemoteException ex) {
@@ -215,7 +273,8 @@ public final class SmsManager {
         try {
             ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
             if (iccISms != null) {
-                iccISms.sendData(destinationAddress, scAddress, destinationPort & 0xFFFF,
+                iccISms.sendData(ActivityThread.currentPackageName(),
+                        destinationAddress, scAddress, destinationPort & 0xFFFF,
                         data, sentIntent, deliveryIntent);
             }
         } catch (RemoteException ex) {
@@ -259,7 +318,8 @@ public final class SmsManager {
         try {
             ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
             if (iccISms != null) {
-                success = iccISms.copyMessageToIccEf(status, pdu, smsc);
+                success = iccISms.copyMessageToIccEf(ActivityThread.currentPackageName(),
+                        status, pdu, smsc);
             }
         } catch (RemoteException ex) {
             // ignore it
@@ -287,7 +347,8 @@ public final class SmsManager {
         try {
             ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
             if (iccISms != null) {
-                success = iccISms.updateMessageOnIccEf(messageIndex, STATUS_ON_ICC_FREE, pdu);
+                success = iccISms.updateMessageOnIccEf(ActivityThread.currentPackageName(),
+                        messageIndex, STATUS_ON_ICC_FREE, pdu);
             }
         } catch (RemoteException ex) {
             // ignore it
@@ -316,7 +377,8 @@ public final class SmsManager {
         try {
             ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
             if (iccISms != null) {
-                success = iccISms.updateMessageOnIccEf(messageIndex, newStatus, pdu);
+                success = iccISms.updateMessageOnIccEf(ActivityThread.currentPackageName(),
+                        messageIndex, newStatus, pdu);
             }
         } catch (RemoteException ex) {
             // ignore it
@@ -340,7 +402,7 @@ public final class SmsManager {
         try {
             ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
             if (iccISms != null) {
-                records = iccISms.getAllMessagesFromIccEf();
+                records = iccISms.getAllMessagesFromIccEf(ActivityThread.currentPackageName());
             }
         } catch (RemoteException ex) {
             // ignore it
@@ -358,7 +420,8 @@ public final class SmsManager {
      * Note: This call is blocking, callers may want to avoid calling it from
      * the main thread of an application.
      *
-     * @param messageIdentifier Message identifier as specified in TS 23.041
+     * @param messageIdentifier Message identifier as specified in TS 23.041 (3GPP)
+     * or C.R1001-G (3GPP2)
      * @return true if successful, false otherwise
      * @see #disableCellBroadcast(int)
      *
@@ -387,7 +450,8 @@ public final class SmsManager {
      * Note: This call is blocking, callers may want to avoid calling it from
      * the main thread of an application.
      *
-     * @param messageIdentifier Message identifier as specified in TS 23.041
+     * @param messageIdentifier Message identifier as specified in TS 23.041 (3GPP)
+     * or C.R1001-G (3GPP2)
      * @return true if successful, false otherwise
      *
      * @see #enableCellBroadcast(int)
@@ -418,8 +482,10 @@ public final class SmsManager {
      * Note: This call is blocking, callers may want to avoid calling it from
      * the main thread of an application.
      *
-     * @param startMessageId first message identifier as specified in TS 23.041
-     * @param endMessageId last message identifier as specified in TS 23.041
+     * @param startMessageId first message identifier as specified in TS 23.041 (3GPP)
+     * or C.R1001-G (3GPP2)
+     * @param endMessageId last message identifier as specified in TS 23.041 (3GPP)
+     * or C.R1001-G (3GPP2)
      * @return true if successful, false otherwise
      * @see #disableCellBroadcastRange(int, int)
      *
@@ -452,8 +518,10 @@ public final class SmsManager {
      * Note: This call is blocking, callers may want to avoid calling it from
      * the main thread of an application.
      *
-     * @param startMessageId first message identifier as specified in TS 23.041
-     * @param endMessageId last message identifier as specified in TS 23.041
+     * @param startMessageId first message identifier as specified in TS 23.041 (3GPP)
+     * or C.R1001-G (3GPP2)
+     * @param endMessageId last message identifier as specified in TS 23.041 (3GPP)
+     * or C.R1001-G (3GPP2)
      * @return true if successful, false otherwise
      *
      * @see #enableCellBroadcastRange(int, int)
@@ -503,6 +571,54 @@ public final class SmsManager {
             }
         }
         return messages;
+    }
+
+    /**
+     * SMS over IMS is supported if IMS is registered and SMS is supported
+     * on IMS.
+     *
+     * @return true if SMS over IMS is supported, false otherwise
+     *
+     * @see #getImsSmsFormat()
+     *
+     * @hide
+     */
+    boolean isImsSmsSupported() {
+        boolean boSupported = false;
+        try {
+            ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
+            if (iccISms != null) {
+                boSupported = iccISms.isImsSmsSupported();
+            }
+        } catch (RemoteException ex) {
+            // ignore it
+        }
+        return boSupported;
+    }
+
+    /**
+     * Gets SMS format supported on IMS.  SMS over IMS format is
+     * either 3GPP or 3GPP2.
+     *
+     * @return SmsMessage.FORMAT_3GPP,
+     *         SmsMessage.FORMAT_3GPP2
+     *      or SmsMessage.FORMAT_UNKNOWN
+     *
+     * @see #isImsSmsSupported()
+     *
+     * @hide
+     */
+    String getImsSmsFormat() {
+        String format = com.android.internal.telephony.SmsConstants.FORMAT_UNKNOWN;
+        try {
+            ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService("isms"));
+            if (iccISms != null) {
+                format = iccISms.getImsSmsFormat();
+            }
+        } catch (RemoteException ex) {
+            // ignore it
+        }
+        return format;
     }
 
     // see SmsMessage.getStatusOnIcc

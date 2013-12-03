@@ -19,11 +19,10 @@ package com.android.internal.telephony;
 import android.content.Context;
 import android.net.LocalServerSocket;
 import android.os.Looper;
+import android.os.SystemProperties;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
-import android.util.Log;
-import android.os.SystemProperties;
-
+import android.telephony.Rlog;
 import com.android.internal.telephony.cdma.CDMAPhone;
 import com.android.internal.telephony.cdma.CDMALTEPhone;
 import com.android.internal.telephony.cdma.CdmaSubscriptionSourceManager;
@@ -38,21 +37,21 @@ import java.lang.reflect.Constructor;
  * {@hide}
  */
 public class PhoneFactory {
-    static final String LOG_TAG = "PHONE";
-    static final int SOCKET_OPEN_RETRY_MILLIS = 2 * 1000;
-    static final int SOCKET_OPEN_MAX_RETRY = 3;
+    static final String LOG_TAG = "PhoneFactory";
+    static protected final int SOCKET_OPEN_RETRY_MILLIS = 2 * 1000;
+    static protected final int SOCKET_OPEN_MAX_RETRY = 3;
 
     //***** Class Variables
 
-    static private Phone sProxyPhone = null;
-    static private CommandsInterface sCommandsInterface = null;
+    static protected Phone sProxyPhone = null;
+    static protected CommandsInterface sCommandsInterface = null;
 
-    static private boolean sMadeDefaults = false;
-    static private PhoneNotifier sPhoneNotifier;
-    static private Looper sLooper;
-    static private Context sContext;
+    static protected boolean sMadeDefaults = false;
+    static protected PhoneNotifier sPhoneNotifier;
+    static protected Looper sLooper;
+    static protected Context sContext;
 
-    static final int preferredCdmaSubscription =
+    protected static final int sPreferredCdmaSubscription =
                          CdmaSubscriptionSourceManager.PREFERRED_CDMA_SUBSCRIPTION;
 
     //***** Class Methods
@@ -113,18 +112,27 @@ public class PhoneFactory {
                 }
                 int networkMode = Settings.Global.getInt(context.getContentResolver(),
                         Settings.Global.PREFERRED_NETWORK_MODE, preferredNetworkMode);
-                Log.i(LOG_TAG, "Network Mode set to " + Integer.toString(networkMode));
+                Rlog.i(LOG_TAG, "Network Mode set to " + Integer.toString(networkMode));
+
+                // As per certain operator requirement, the device is expected to be in global
+                // mode from boot up, by enabling the property persist.env.phone.global the
+                // network mode is set to global during boot up.
+                if (SystemProperties.getBoolean("persist.env.phone.global", false)) {
+                    networkMode = Phone.NT_MODE_LTE_CMDA_EVDO_GSM_WCDMA;
+                    Settings.Global.putInt(context.getContentResolver(),
+                            Settings.Global.PREFERRED_NETWORK_MODE, networkMode);
+                }
 
                 // Get cdmaSubscription mode from Settings.Global
                 int cdmaSubscription;
                 cdmaSubscription = Settings.Global.getInt(context.getContentResolver(),
                                 Settings.Global.CDMA_SUBSCRIPTION_MODE,
-                                preferredCdmaSubscription);
-                Log.i(LOG_TAG, "Cdma Subscription set to " + cdmaSubscription);
+                                sPreferredCdmaSubscription);
+                Rlog.i(LOG_TAG, "Cdma Subscription set to " + cdmaSubscription);
 
                 //reads the system properties and makes commandsinterface
                 String sRILClassname = SystemProperties.get("ro.telephony.ril_class", "RIL");
-                Log.i(LOG_TAG, "RILClassname is " + sRILClassname);
+                Rlog.i(LOG_TAG, "RILClassname is " + sRILClassname);
 
                 // Use reflection to construct the RIL class (defaults to RIL)
                 try {
@@ -134,7 +142,7 @@ public class PhoneFactory {
                 } catch (Exception e) {
                     // 6 different types of exceptions are thrown here that it's
                     // easier to just catch Exception as our "error handling" is the same.
-                    Log.wtf(LOG_TAG, "Unable to construct command interface", e);
+                    Rlog.i(LOG_TAG, "Unable to construct command interface", e);
                     throw new RuntimeException(e);
                 }
 
@@ -143,19 +151,19 @@ public class PhoneFactory {
 
                 int phoneType = TelephonyManager.getPhoneType(networkMode);
                 if (phoneType == PhoneConstants.PHONE_TYPE_GSM) {
-                    Log.i(LOG_TAG, "Creating GSMPhone");
+                    Rlog.i(LOG_TAG, "Creating GSMPhone");
                     sProxyPhone = new PhoneProxy(new GSMPhone(context,
                             sCommandsInterface, sPhoneNotifier));
                 } else if (phoneType == PhoneConstants.PHONE_TYPE_CDMA) {
                     switch (TelephonyManager.getLteOnCdmaModeStatic()) {
                         case PhoneConstants.LTE_ON_CDMA_TRUE:
-                            Log.i(LOG_TAG, "Creating CDMALTEPhone");
+                            Rlog.i(LOG_TAG, "Creating CDMALTEPhone");
                             sProxyPhone = new PhoneProxy(new CDMALTEPhone(context,
                                 sCommandsInterface, sPhoneNotifier));
                             break;
                         case PhoneConstants.LTE_ON_CDMA_FALSE:
                         default:
-                            Log.i(LOG_TAG, "Creating CDMAPhone");
+                            Rlog.i(LOG_TAG, "Creating CDMAPhone");
                             sProxyPhone = new PhoneProxy(new CDMAPhone(context,
                                     sCommandsInterface, sPhoneNotifier));
                             break;

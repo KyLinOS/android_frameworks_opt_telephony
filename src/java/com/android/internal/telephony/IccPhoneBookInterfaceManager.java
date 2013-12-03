@@ -23,7 +23,13 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.ServiceManager;
 
-import com.android.internal.telephony.IccCardApplicationStatus.AppType;
+import com.android.internal.telephony.uicc.AdnRecord;
+import com.android.internal.telephony.uicc.AdnRecordCache;
+import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
+import com.android.internal.telephony.uicc.IccConstants;
+import com.android.internal.telephony.uicc.IccRecords;
+import com.android.internal.telephony.uicc.UiccCard;
+import com.android.internal.telephony.uicc.UiccCardApplication;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -35,12 +41,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
     protected static final boolean DBG = true;
 
-    protected PhoneBase phone;
-    protected AdnRecordCache adnCache;
+    protected PhoneBase mPhone;
+    private   UiccCardApplication mCurrentApp = null;
+    protected AdnRecordCache mAdnCache;
     protected final Object mLock = new Object();
-    protected int recordSize[];
-    protected boolean success;
-    protected List<AdnRecord> records;
+    protected int mRecordSize[];
+    protected boolean mSuccess;
+    private   boolean mIs3gCard = false;  // flag to determine if card is 3G or 2G
+    protected List<AdnRecord> mRecords;
+
 
     protected static final boolean ALLOW_SIM_OP_IN_UI_THREAD = false;
 
@@ -58,13 +67,13 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
                     ar = (AsyncResult) msg.obj;
                     synchronized (mLock) {
                         if (ar.exception == null) {
-                            recordSize = (int[])ar.result;
+                            mRecordSize = (int[])ar.result;
                             // recordSize[0]  is the record length
                             // recordSize[1]  is the total length of the EF file
                             // recordSize[2]  is the number of records in the EF file
-                            logd("GET_RECORD_SIZE Size " + recordSize[0] +
-                                    " total " + recordSize[1] +
-                                    " #record " + recordSize[2]);
+                            logd("GET_RECORD_SIZE Size " + mRecordSize[0] +
+                                    " total " + mRecordSize[1] +
+                                    " #record " + mRecordSize[2]);
                         }
                         notifyPending(ar);
                     }
@@ -72,7 +81,7 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
                 case EVENT_UPDATE_DONE:
                     ar = (AsyncResult) msg.obj;
                     synchronized (mLock) {
-                        success = (ar.exception == null);
+                        mSuccess = (ar.exception == null);
                         notifyPending(ar);
                     }
                     break;
@@ -80,11 +89,11 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
                     ar = (AsyncResult)msg.obj;
                     synchronized (mLock) {
                         if (ar.exception == null) {
-                            records = (List<AdnRecord>) ar.result;
+                            mRecords = (List<AdnRecord>) ar.result;
                         } else {
                             if(DBG) logd("Cannot load ADN records");
-                            if (records != null) {
-                                records.clear();
+                            if (mRecords != null) {
+                                mRecords.clear();
                             }
                         }
                         notifyPending(ar);
@@ -104,21 +113,81 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
     };
 
     public IccPhoneBookInterfaceManager(PhoneBase phone) {
-        this.phone = phone;
-        IccRecords r = phone.mIccRecords.get();
-        if (r != null) {
-            adnCache = r.getAdnCache();
+        this.mPhone = phone;
+    }
+
+    private void cleanUp() {
+        if (mAdnCache != null) {
+            mAdnCache.reset();
+            mAdnCache = null;
         }
+        mIs3gCard = false;
+        mCurrentApp = null;
     }
 
     public void dispose() {
+        cleanUp();
     }
 
-    public void updateIccRecords(IccRecords iccRecords) {
-        if (iccRecords != null) {
-            adnCache = iccRecords.getAdnCache();
-        } else {
-            adnCache = null;
+    public void setIccCard(UiccCard card) {
+        logd("Card update received: " + card);
+
+        if (card == null) {
+            logd("Card is null. Cleanup");
+            cleanUp();
+            return;
+        }
+
+        UiccCardApplication validApp = null;
+        int numApps = card.getNumApplications();
+        boolean isCurrentAppFound = false;
+
+        for (int i = 0; i < numApps; i++) {
+            UiccCardApplication app = card.getApplicationIndex(i);
+            if (app != null) {
+                // Determine if the card is a 3G card by looking
+                // for a CSIM/USIM/ISIM app on the card
+                AppType type = app.getType();
+                if (type == AppType.APPTYPE_CSIM || type == AppType.APPTYPE_USIM
+                        || type == AppType.APPTYPE_ISIM) {
+                    logd("Card is 3G");
+                    mIs3gCard = true;
+                }
+                // Check if the app we have is present.
+                // If yes, then continue using that.
+                if (!isCurrentAppFound) {
+                    // if not, then find a valid app.
+                    // It does not matter which app, since we are
+                    // accessing non-app specific files
+                    if (validApp == null && type != AppType.APPTYPE_UNKNOWN) {
+                        validApp = app;
+                    }
+
+                    if (mCurrentApp == app) {
+                        logd("Existing app found");
+                        isCurrentAppFound = true;
+                    }
+                }
+
+                // We have determined that this is 3g card
+                // and we also found the current app
+                // We are done
+                if (mIs3gCard && isCurrentAppFound) {
+                    break;
+                }
+            }
+        }
+
+        //Set a new currentApp if
+        // - one was not set before
+        // OR
+        // - the previously set app no longer exists
+        if (mCurrentApp == null || !isCurrentAppFound) {
+            if (validApp != null) {
+                logd("Setting currentApp: " + validApp);
+                mCurrentApp = validApp;
+                mAdnCache = mCurrentApp.getIccRecords().getAdnCache();
+            }
         }
     }
 
@@ -151,13 +220,14 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
      * @param pin2 required to update EF_FDN, otherwise must be null
      * @return true for success
      */
+    @Override
     public boolean
     updateAdnRecordsInEfBySearch (int efid,
             String oldTag, String oldPhoneNumber,
             String newTag, String newPhoneNumber, String pin2) {
 
 
-        if (phone.getContext().checkCallingOrSelfPermission(
+        if (mPhone.getContext().checkCallingOrSelfPermission(
                 android.Manifest.permission.WRITE_CONTACTS)
             != PackageManager.PERMISSION_GRANTED) {
             throw new SecurityException(
@@ -173,15 +243,19 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
 
         synchronized(mLock) {
             checkThread();
-            success = false;
+            mSuccess = false;
             AtomicBoolean status = new AtomicBoolean(false);
             Message response = mBaseHandler.obtainMessage(EVENT_UPDATE_DONE, status);
             AdnRecord oldAdn = new AdnRecord(oldTag, oldPhoneNumber);
             AdnRecord newAdn = new AdnRecord(newTag, newPhoneNumber);
-            adnCache.updateAdnBySearch(efid, oldAdn, newAdn, pin2, response);
-            waitForResult(status);
+            if (mAdnCache != null) {
+                mAdnCache.updateAdnBySearch(efid, oldAdn, newAdn, pin2, response);
+                waitForResult(status);
+            } else {
+                loge("Failure while trying to update by search due to uninitialised adncache");
+            }
         }
-        return success;
+        return mSuccess;
     }
 
     /**
@@ -201,11 +275,12 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
      * @param pin2 required to update EF_FDN, otherwise must be null
      * @return true for success
      */
+    @Override
     public boolean
     updateAdnRecordsInEfByIndex(int efid, String newTag,
             String newPhoneNumber, int index, String pin2) {
 
-        if (phone.getContext().checkCallingOrSelfPermission(
+        if (mPhone.getContext().checkCallingOrSelfPermission(
                 android.Manifest.permission.WRITE_CONTACTS)
                 != PackageManager.PERMISSION_GRANTED) {
             throw new SecurityException(
@@ -217,14 +292,18 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
                 "("+ newTag + "," + newPhoneNumber + ")"+ " pin2=" + pin2);
         synchronized(mLock) {
             checkThread();
-            success = false;
+            mSuccess = false;
             AtomicBoolean status = new AtomicBoolean(false);
             Message response = mBaseHandler.obtainMessage(EVENT_UPDATE_DONE, status);
             AdnRecord newAdn = new AdnRecord(newTag, newPhoneNumber);
-            adnCache.updateAdnByIndex(efid, newAdn, index, pin2, response);
-            waitForResult(status);
+            if (mAdnCache != null) {
+                mAdnCache.updateAdnByIndex(efid, newAdn, index, pin2, response);
+                waitForResult(status);
+            } else {
+                loge("Failure while trying to update by index due to uninitialised adncache");
+            }
         }
-        return success;
+        return mSuccess;
     }
 
     /**
@@ -236,6 +315,7 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
      *            recordSizes[1]  is the total length of the EF file
      *            recordSizes[2]  is the number of records in the EF file
      */
+    @Override
     public abstract int[] getAdnRecordsSize(int efid);
 
     /**
@@ -247,9 +327,10 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
      * @param efid the EF id of a ADN-like ICC
      * @return List of AdnRecord
      */
+    @Override
     public List<AdnRecord> getAdnRecordsInEf(int efid) {
 
-        if (phone.getContext().checkCallingOrSelfPermission(
+        if (mPhone.getContext().checkCallingOrSelfPermission(
                 android.Manifest.permission.READ_CONTACTS)
                 != PackageManager.PERMISSION_GRANTED) {
             throw new SecurityException(
@@ -263,10 +344,14 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
             checkThread();
             AtomicBoolean status = new AtomicBoolean(false);
             Message response = mBaseHandler.obtainMessage(EVENT_LOAD_DONE, status);
-            adnCache.requestLoadAllAdnLike(efid, adnCache.extensionEfForEf(efid), response);
-            waitForResult(status);
+            if (mAdnCache != null) {
+                mAdnCache.requestLoadAllAdnLike(efid, mAdnCache.extensionEfForEf(efid), response);
+                waitForResult(status);
+            } else {
+                loge("Failure while trying to load from SIM due to uninitialised adncache");
+            }
         }
-        return records;
+        return mRecords;
     }
 
     protected void checkThread() {
@@ -291,11 +376,11 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
     }
 
     private int updateEfForIccType(int efid) {
-        // Check if we are trying to read ADN records
-        if (efid == IccConstants.EF_ADN) {
-            if (phone.getCurrentUiccAppType() == AppType.APPTYPE_USIM) {
-                return IccConstants.EF_PBR;
-            }
+        // If we are trying to read ADN records on a 3G card
+        // use EF_PBR
+        if (efid == IccConstants.EF_ADN && mIs3gCard) {
+            logd("Translate EF_ADN to EF_PBR");
+            return IccConstants.EF_PBR;
         }
         return efid;
     }

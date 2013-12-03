@@ -16,7 +16,9 @@
 
 package com.android.internal.telephony;
 
+import android.telephony.Rlog;
 import android.util.Log;
+import com.android.internal.telephony.CallStateException;
 
 /**
  * {@hide}
@@ -24,10 +26,10 @@ import android.util.Log;
 public abstract class Connection {
 
     //Caller Name Display
-    protected String cnapName;
-    protected int cnapNamePresentation  = PhoneConstants.PRESENTATION_ALLOWED;
+    protected String mCnapName;
+    protected int mCnapNamePresentation  = PhoneConstants.PRESENTATION_ALLOWED;
 
-    private static String LOG_TAG = "TelephonyConnection";
+    private static String LOG_TAG = "Connection";
 
     public enum DisconnectCause {
         NOT_DISCONNECTED,               /* has not yet disconnected */
@@ -56,6 +58,9 @@ public abstract class Connection {
         CS_RESTRICTED_NORMAL,           /* call was blocked by restricted normal voice access */
         CS_RESTRICTED_EMERGENCY,        /* call was blocked by restricted emergency voice access */
         UNOBTAINABLE_NUMBER,            /* Unassigned number (3GPP TS 24.008 table 10.5.123) */
+        DIAL_MODIFIED_TO_USSD,          /* Stk Call Control modified DIAL request to USSD request */
+        DIAL_MODIFIED_TO_SS,            /* Stk Call Control modified DIAL request to SS request */
+        DIAL_MODIFIED_TO_DIAL,          /* Stk Call Control modified DIAL request to DIAL with modified data */
         CDMA_LOCKED_UNTIL_POWER_CYCLE,  /* MS is locked until next power cycle */
         CDMA_DROP,
         CDMA_INTERCEPT,                 /* INTERCEPT order received, MS state idle entered */
@@ -69,7 +74,14 @@ public abstract class Connection {
         ERROR_UNSPECIFIED
     }
 
-    Object userData;
+    Object mUserData;
+
+    /*
+     * This time/timespan values are based on SystemClock.elapsedRealTime(),
+     * i.e., time since boot.  They are appropriate for comparison and
+     * calculating deltas.
+     */
+    public long mConnectTimeReal;
 
     /* Instance Methods */
 
@@ -87,7 +99,7 @@ public abstract class Connection {
      * @return cnap name or null if unavailable
      */
     public String getCnapName() {
-        return cnapName;
+        return mCnapName;
     }
 
     /**
@@ -104,8 +116,8 @@ public abstract class Connection {
      */
 
     public int getCnapNamePresentation() {
-       return cnapNamePresentation;
-    };
+       return mCnapNamePresentation;
+    }
 
     /**
      * @return Call that owns this Connection, or null if none
@@ -206,7 +218,7 @@ public abstract class Connection {
      * @return the userdata set in setUserData()
      */
     public Object getUserData() {
-        return userData;
+        return mUserData;
     }
 
     /**
@@ -214,7 +226,7 @@ public abstract class Connection {
      * @param userdata user can store an any userdata in the Connection object.
      */
     public void setUserData(Object userdata) {
-        this.userData = userdata;
+        mUserData = userdata;
     }
 
     /**
@@ -246,7 +258,7 @@ public abstract class Connection {
     }
 
     public void clearUserData(){
-        userData = null;
+        mUserData = null;
     }
 
     public abstract PostDialState getPostDialState();
@@ -286,6 +298,16 @@ public abstract class Connection {
     public abstract UUSInfo getUUSInfo();
 
     /**
+     * Gets connection index associated with connection.
+     * @return index or exception if unavailable or phone
+     * does not support this API
+     */
+
+    public int getIndex() throws CallStateException {
+        throw new CallStateException("Connection index not assigned");
+    }
+
+    /**
      * Build a human representation of a connection instance, suitable for debugging.
      * Don't log personal stuff unless in debug mode.
      * @return a string representing the internal state of this connection.
@@ -293,7 +315,7 @@ public abstract class Connection {
     public String toString() {
         StringBuilder str = new StringBuilder(128);
 
-        if (Log.isLoggable(LOG_TAG, Log.DEBUG)) {
+        if (Rlog.isLoggable(LOG_TAG, Log.DEBUG)) {
             str.append("addr: " + getAddress())
                     .append(" pres.: " + getNumberPresentation())
                     .append(" dial: " + getOrigDialString())

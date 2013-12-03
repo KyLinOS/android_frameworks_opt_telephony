@@ -22,15 +22,13 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.Registrant;
 import android.os.RegistrantList;
-import android.util.Log;
+import android.telephony.Rlog;
 
 import com.android.internal.telephony.CommandsInterface;
-import com.android.internal.telephony.IccCardStatus;
-import com.android.internal.telephony.IccFileHandler;
-import com.android.internal.telephony.IccRecords;
-import com.android.internal.telephony.PhoneConstants;
-import com.android.internal.telephony.UiccCard;
-import com.android.internal.telephony.UiccCardApplication;
+import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
+
+import java.io.FileDescriptor;
+import java.io.PrintWriter;
 
 /**
  * This class is responsible for keeping all knowledge about
@@ -70,27 +68,28 @@ import com.android.internal.telephony.UiccCardApplication;
  *         ^ stands for Generalization
  *
  * See also {@link com.android.internal.telephony.IccCard}
- * and {@link com.android.internal.telephony.IccCardProxy}
+ * and {@link com.android.internal.telephony.uicc.IccCardProxy}
  */
 public class UiccController extends Handler {
-    private static final boolean DBG = true;
-    private static final String LOG_TAG = "RIL_UiccController";
+    protected static final boolean DBG = true;
+    protected static final String LOG_TAG = "UiccController";
 
     public static final int APP_FAM_3GPP =  1;
     public static final int APP_FAM_3GPP2 = 2;
     public static final int APP_FAM_IMS   = 3;
 
-    private static final int EVENT_ICC_STATUS_CHANGED = 1;
-    private static final int EVENT_GET_ICC_STATUS_DONE = 2;
+    protected static final int EVENT_ICC_STATUS_CHANGED = 1;
+    protected static final int EVENT_GET_ICC_STATUS_DONE = 2;
+    private static final int EVENT_REFRESH = 4;
 
-    private static final Object mLock = new Object();
-    private static UiccController mInstance;
+    protected static final Object mLock = new Object();
+    protected static UiccController mInstance;
 
-    private Context mContext;
+    protected Context mContext;
     private CommandsInterface mCi;
-    private UiccCard mUiccCard;
+    protected UiccCard mUiccCard;
 
-    private RegistrantList mIccChangedRegistrants = new RegistrantList();
+    protected RegistrantList mIccChangedRegistrants = new RegistrantList();
 
     public static UiccController make(Context c, CommandsInterface ci) {
         synchronized (mLock) {
@@ -184,10 +183,33 @@ public class UiccController extends Handler {
                     AsyncResult ar = (AsyncResult)msg.obj;
                     onGetIccCardStatusDone(ar);
                     break;
+                case EVENT_REFRESH:
+                    ar = (AsyncResult)msg.obj;
+                    if (DBG) log("Sim REFRESH received");
+                    if (ar.exception == null) {
+                        handleRefresh((IccRefreshResponse)ar.result);
+                    } else {
+                        log ("Exception on refresh " + ar.exception);
+                    }
+                    break;
                 default:
-                    Log.e(LOG_TAG, " Unknown Event " + msg.what);
+                    Rlog.e(LOG_TAG, " Unknown Event " + msg.what);
             }
         }
+    }
+
+    private void handleRefresh(IccRefreshResponse refreshResponse){
+        if (refreshResponse == null) {
+            log("handleRefresh received without input");
+            return;
+        }
+
+        // Let the card know right away that a refresh has occurred
+        if (mUiccCard != null) {
+            mUiccCard.onRefresh(refreshResponse);
+        }
+        // The card status could have changed. Get the latest state
+        mCi.getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE));
     }
 
     private UiccController(Context c, CommandsInterface ci) {
@@ -197,11 +219,12 @@ public class UiccController extends Handler {
         mCi.registerForIccStatusChanged(this, EVENT_ICC_STATUS_CHANGED, null);
         // TODO remove this once modem correctly notifies the unsols
         mCi.registerForOn(this, EVENT_ICC_STATUS_CHANGED, null);
+        mCi.registerForIccRefresh(this, EVENT_REFRESH, null);
     }
 
     private synchronized void onGetIccCardStatusDone(AsyncResult ar) {
         if (ar.exception != null) {
-            Log.e(LOG_TAG,"Error getting ICC status. "
+            Rlog.e(LOG_TAG,"Error getting ICC status. "
                     + "RIL_REQUEST_GET_ICC_STATUS should "
                     + "never return an error", ar.exception);
             return;
@@ -221,7 +244,28 @@ public class UiccController extends Handler {
         mIccChangedRegistrants.notifyRegistrants();
     }
 
+    protected UiccController() {
+    }
+
     private void log(String string) {
-        Log.d(LOG_TAG, string);
+        Rlog.d(LOG_TAG, string);
+    }
+
+    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+        pw.println("UiccController: " + this);
+        pw.println(" mContext=" + mContext);
+        pw.println(" mInstance=" + mInstance);
+        pw.println(" mCi=" + mCi);
+        pw.println(" mUiccCard=" + mUiccCard);
+        pw.println(" mIccChangedRegistrants: size=" + mIccChangedRegistrants.size());
+        for (int i = 0; i < mIccChangedRegistrants.size(); i++) {
+            pw.println("  mIccChangedRegistrants[" + i + "]="
+                    + ((Registrant)mIccChangedRegistrants.get(i)).getHandler());
+        }
+        pw.println();
+        pw.flush();
+        if (mUiccCard != null) {
+            mUiccCard.dump(fd, pw, args);
+        }
     }
 }

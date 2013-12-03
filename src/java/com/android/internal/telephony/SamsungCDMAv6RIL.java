@@ -26,6 +26,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.media.AudioManager;
 import android.net.ConnectivityManager;
 import android.os.Handler;
 import android.os.Message;
@@ -40,27 +41,30 @@ import static com.android.internal.telephony.RILConstants.*;
 
 import com.android.internal.telephony.CallForwardInfo;
 import com.android.internal.telephony.CommandException;
-import com.android.internal.telephony.DataCallState;
-import com.android.internal.telephony.DataConnection.FailCause;
 import com.android.internal.telephony.gsm.SmsBroadcastConfigInfo;
 import com.android.internal.telephony.gsm.SuppServiceNotification;
-import com.android.internal.telephony.IccCardApplicationStatus;
-import com.android.internal.telephony.IccCardStatus;
-import com.android.internal.telephony.IccUtils;
+import com.android.internal.telephony.uicc.IccCardApplicationStatus;
+import com.android.internal.telephony.uicc.IccCardStatus;
+import com.android.internal.telephony.uicc.IccUtils;
 import com.android.internal.telephony.RILConstants;
 import com.android.internal.telephony.SmsResponse;
 import com.android.internal.telephony.cdma.CdmaCallWaitingNotification;
 import com.android.internal.telephony.cdma.CdmaInformationRecords;
 import com.android.internal.telephony.cdma.CdmaInformationRecords.CdmaSignalInfoRec;
 import com.android.internal.telephony.cdma.SignalToneUtil;
+import com.android.internal.telephony.dataconnection.DataCallResponse;
+import com.android.internal.telephony.dataconnection.DcFailCause;
 
 import android.text.TextUtils;
-import android.util.Log;
+import android.telephony.Rlog;
 
 public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
 
+    private AudioManager audioManager;
+
     public SamsungCDMAv6RIL(Context context, int networkMode, int cdmaSubscription) {
         super(context, networkMode, cdmaSubscription);
+        audioManager = (AudioManager)mContext.getSystemService(Context.AUDIO_SERVICE);
     }
 
     // SAMSUNG SGS STATES
@@ -72,6 +76,8 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
     static final int RIL_UNSOL_DUN_PIN_CONTROL_SIGNAL = 11011;
     static final int RIL_UNSOL_HSDPA_STATE_CHANGED = 11016;
     static final int RIL_REQUEST_DIAL_EMERGENCY = 10016;
+    static final int RIL_UNSOL_WB_AMR_STATE = 11017;
+    static final int RIL_UNSOL_TWO_MIC_STATE = 11018;
 
     static String
     requestToString(int request) {
@@ -108,12 +114,12 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         RILRequest rr = RILRequest.obtain(RIL_REQUEST_RADIO_POWER, result);
 
         if (on) {
-            rr.mp.writeInt(1);
-            rr.mp.writeInt(1);
+            rr.mParcel.writeInt(1);
+            rr.mParcel.writeInt(1);
         } else {
-            rr.mp.writeInt(2);
-            rr.mp.writeInt(0);
-            rr.mp.writeInt(0);
+            rr.mParcel.writeInt(2);
+            rr.mParcel.writeInt(0);
+            rr.mParcel.writeInt(0);
         }
 
         if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
@@ -128,15 +134,15 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         serial = p.readInt();
         error = p.readInt();
 
-        Log.d(LOG_TAG, "Serial: " + serial);
-        Log.d(LOG_TAG, "Error: " + error);
+        Rlog.d(RILJ_LOG_TAG, "Serial: " + serial);
+        Rlog.d(RILJ_LOG_TAG, "Error: " + error);
 
         RILRequest rr;
 
         rr = findAndRemoveRequestFromList(serial);
 
         if (rr == null) {
-            Log.w(LOG_TAG, "Unexpected solicited response! sn: "
+            Rlog.w(RILJ_LOG_TAG, "Unexpected solicited response! sn: "
                     + serial + " error: " + error);
             return;
         }
@@ -158,7 +164,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             case RIL_REQUEST_ENTER_SIM_PUK2: ret =  responseInts(p); break;
             case RIL_REQUEST_CHANGE_SIM_PIN: ret =  responseInts(p); break;
             case RIL_REQUEST_CHANGE_SIM_PIN2: ret =  responseInts(p); break;
-            case RIL_REQUEST_ENTER_NETWORK_DEPERSONALIZATION: ret =  responseInts(p); break;
+            case RIL_REQUEST_ENTER_DEPERSONALIZATION_CODE: ret =  responseInts(p); break;
             case RIL_REQUEST_GET_CURRENT_CALLS: ret =  responseCallList(p); break;
             case RIL_REQUEST_DIAL: ret =  responseVoid(p); break;
             case RIL_REQUEST_GET_IMSI: ret =  responseString(p); break;
@@ -254,6 +260,13 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             case RIL_REQUEST_EXIT_EMERGENCY_CALLBACK_MODE: ret = responseVoid(p); break;
             case RIL_REQUEST_REPORT_SMS_MEMORY_STATUS: ret = responseVoid(p); break;
             case RIL_REQUEST_REPORT_STK_SERVICE_IS_RUNNING: ret = responseVoid(p); break;
+            case RIL_REQUEST_CDMA_GET_SUBSCRIPTION_SOURCE: ret =  responseInts(p); break;
+            case RIL_REQUEST_ISIM_AUTHENTICATION: ret =  responseString(p); break;
+            case RIL_REQUEST_ACKNOWLEDGE_INCOMING_GSM_SMS_WITH_PDU: ret = responseVoid(p); break;
+            case RIL_REQUEST_STK_SEND_ENVELOPE_WITH_STATUS: ret = responseICC_IO(p); break;
+            case RIL_REQUEST_VOICE_RADIO_TECH: ret = responseInts(p); break;
+            case RIL_REQUEST_GET_CELL_INFO_LIST: ret = responseCellInfoList(p); break;
+            case RIL_REQUEST_SET_UNSOL_CELL_INFO_LIST_RATE: ret = responseVoid(p); break;
             case RIL_REQUEST_DIAL_EMERGENCY: ret = responseVoid(p); break;
             case RIL_UNSOL_RIL_CONNECTED: ret = responseInts(p); break;
             default:
@@ -262,7 +275,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             }} catch (Throwable tr) {
                 // Exceptions here usually mean invalid RIL responses
 
-                Log.w(LOG_TAG, rr.serialString() + "< "
+                Rlog.w(RILJ_LOG_TAG, rr.serialString() + "< "
                         + requestToString(rr.mRequest)
                         + " exception, possible invalid RIL response", tr);
 
@@ -283,7 +296,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
                 {
                     ret = responseSMS(p);
                 } catch (Throwable tr) {
-                    Log.w(LOG_TAG, rr.serialString() + "< "
+                    Rlog.w(RILJ_LOG_TAG, rr.serialString() + "< "
                             + requestToString(rr.mRequest)
                             + " exception, Processing Samsung SMS fix ", tr);
                     rr.onError(error, ret);
@@ -314,17 +327,17 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         RILRequest rr;
 
         rr = RILRequest.obtain(RIL_REQUEST_DIAL, result);
-        rr.mp.writeString(address);
-        rr.mp.writeInt(clirMode);
-        rr.mp.writeInt(0); // UUS information is absent
+        rr.mParcel.writeString(address);
+        rr.mParcel.writeInt(clirMode);
+        rr.mParcel.writeInt(0); // UUS information is absent
 
         if (uusInfo == null) {
-            rr.mp.writeInt(0); // UUS information is absent
+            rr.mParcel.writeInt(0); // UUS information is absent
         } else {
-            rr.mp.writeInt(1); // UUS information is present
-            rr.mp.writeInt(uusInfo.getType());
-            rr.mp.writeInt(uusInfo.getDcs());
-            rr.mp.writeByteArray(uusInfo.getUserData());
+            rr.mParcel.writeInt(1); // UUS information is present
+            rr.mParcel.writeInt(uusInfo.getType());
+            rr.mParcel.writeInt(uusInfo.getDcs());
+            rr.mParcel.writeByteArray(uusInfo.getUserData());
         }
 
         if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
@@ -335,13 +348,13 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
     public void
     dialEmergencyCall(String address, int clirMode, Message result) {
         RILRequest rr;
-        Log.v(LOG_TAG, "Emergency dial: " + address);
+        Rlog.v(RILJ_LOG_TAG, "Emergency dial: " + address);
 
         rr = RILRequest.obtain(RIL_REQUEST_DIAL_EMERGENCY, result);
-        rr.mp.writeString(address + "/");
-        rr.mp.writeInt(clirMode);
-        rr.mp.writeInt(0);
-        rr.mp.writeInt(0);
+        rr.mParcel.writeString(address + "/");
+        rr.mParcel.writeInt(clirMode);
+        rr.mParcel.writeInt(0);
+        rr.mParcel.writeInt(0);
 
         if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
 
@@ -369,6 +382,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         case RIL_UNSOL_CDMA_INFO_REC: ret = responseCdmaInformationRecord(p); break;
         case RIL_UNSOL_HSDPA_STATE_CHANGED: ret = responseInts(p); break;
         case RIL_UNSOL_O2_HOME_ZONE_INFO: ret = responseVoid(p); break;
+        case RIL_UNSOL_DATA_CALL_LIST_CHANGED: ret =  responseVoid(p); break;
         case RIL_UNSOL_DEVICE_READY_NOTI: ret = responseVoid(p); break;
         case RIL_UNSOL_GPS_NOTI: ret = responseVoid(p); break; // Ignored in TW RIL.
         // SAMSUNG STATES
@@ -376,6 +390,8 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         case RIL_UNSOL_DUN_PIN_CONTROL_SIGNAL: ret = responseVoid(p); break;
         case RIL_UNSOL_DATA_SUSPEND_RESUME: ret = responseInts(p); break;
         case RIL_UNSOL_RIL_CONNECTED: ret = responseString(p); break;
+        case RIL_UNSOL_TWO_MIC_STATE: ret = responseInts(p); break;
+        case RIL_UNSOL_WB_AMR_STATE: ret = responseInts(p); break;
 
         default:
             // Rewind the Parcel
@@ -457,7 +473,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
                 try {
                     listInfoRecs = (ArrayList<CdmaInformationRecords>)ret;
                 } catch (ClassCastException e) {
-                    Log.e(LOG_TAG, "Unexpected exception casting to listInfoRecs", e);
+                    Rlog.e(RILJ_LOG_TAG, "Unexpected exception casting to listInfoRecs", e);
                     break;
                 }
 
@@ -473,13 +489,13 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             // SAMSUNG STATES
             case RIL_UNSOL_AM:
                 String amString = (String) ret;
-                Log.d(LOG_TAG, "Executing AM: " + amString);
+                Rlog.d(RILJ_LOG_TAG, "Executing AM: " + amString);
 
                 try {
                     Runtime.getRuntime().exec("am " + amString);
                 } catch (IOException e) {
                     e.printStackTrace();
-                    Log.e(LOG_TAG, "am " + amString + " could not be executed.");
+                    Rlog.e(RILJ_LOG_TAG, "am " + amString + " could not be executed.");
                 }
                 break;
             case RIL_UNSOL_DUN_PIN_CONTROL_SIGNAL:
@@ -488,8 +504,30 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             case RIL_UNSOL_DATA_SUSPEND_RESUME:
                 if (RILJ_LOGD) samsungUnsljLogRet(response, ret);
                 break;
+            case RIL_UNSOL_TWO_MIC_STATE:
+                if (RILJ_LOGD) samsungUnsljLogRet(response, ret);
+                break;
+            case RIL_UNSOL_WB_AMR_STATE:
+                if (RILJ_LOGD) samsungUnsljLogRet(response, ret);
+                setWbAmr(((int[])ret)[0]);
+                break;
         }
     }
+
+    /**
+     * Set audio parameter "wb_amr" for HD-Voice (Wideband AMR).
+     *
+     * @param state: 0 = unsupported, 1 = supported.
+     */
+    private void setWbAmr(int state) {
+        if (state == 1) {
+            Rlog.d(RILJ_LOG_TAG, "setWbAmr(): setting audio parameter - wb_amr=on");
+            audioManager.setParameters("wb_amr=on");
+        } else {
+            Rlog.d(RILJ_LOG_TAG, "setWbAmr(): setting audio parameter - wb_amr=off");
+            audioManager.setParameters("wb_amr=off");
+         }
+     }
 
     @Override
     protected Object
@@ -502,9 +540,9 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         int pos = p.dataPosition();
         int size = p.dataSize();
 
-        Log.d(LOG_TAG, "Parcel size = " + size);
-        Log.d(LOG_TAG, "Parcel pos = " + pos);
-        Log.d(LOG_TAG, "Parcel dataAvail = " + dataAvail);
+        Rlog.d(RILJ_LOG_TAG, "Parcel size = " + size);
+        Rlog.d(RILJ_LOG_TAG, "Parcel pos = " + pos);
+        Rlog.d(RILJ_LOG_TAG, "Parcel dataAvail = " + dataAvail);
 
         num = p.readInt();
         response = new ArrayList<DriverCall>(num);
@@ -528,19 +566,19 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             dc.namePresentation     = p.readInt();
             int uusInfoPresent      = p.readInt();
 
-            Log.d(LOG_TAG, "state = " + dc.state);
-            Log.d(LOG_TAG, "index = " + dc.index);
-            Log.d(LOG_TAG, "state = " + dc.TOA);
-            Log.d(LOG_TAG, "isMpty = " + dc.isMpty);
-            Log.d(LOG_TAG, "isMT = " + dc.isMT);
-            Log.d(LOG_TAG, "als = " + dc.als);
-            Log.d(LOG_TAG, "isVoice = " + dc.isVoice);
-            Log.d(LOG_TAG, "isVideo = " + isVideo);
-            Log.d(LOG_TAG, "number = " + dc.number);
-            Log.d(LOG_TAG, "numberPresentation = " + np);
-            Log.d(LOG_TAG, "name = " + dc.name);
-            Log.d(LOG_TAG, "namePresentation = " + dc.namePresentation);
-            Log.d(LOG_TAG, "uusInfoPresent = " + uusInfoPresent);
+            Rlog.d(RILJ_LOG_TAG, "state = " + dc.state);
+            Rlog.d(RILJ_LOG_TAG, "index = " + dc.index);
+            Rlog.d(RILJ_LOG_TAG, "state = " + dc.TOA);
+            Rlog.d(RILJ_LOG_TAG, "isMpty = " + dc.isMpty);
+            Rlog.d(RILJ_LOG_TAG, "isMT = " + dc.isMT);
+            Rlog.d(RILJ_LOG_TAG, "als = " + dc.als);
+            Rlog.d(RILJ_LOG_TAG, "isVoice = " + dc.isVoice);
+            Rlog.d(RILJ_LOG_TAG, "isVideo = " + isVideo);
+            Rlog.d(RILJ_LOG_TAG, "number = " + dc.number);
+            Rlog.d(RILJ_LOG_TAG, "numberPresentation = " + np);
+            Rlog.d(RILJ_LOG_TAG, "name = " + dc.name);
+            Rlog.d(RILJ_LOG_TAG, "namePresentation = " + dc.namePresentation);
+            Rlog.d(RILJ_LOG_TAG, "uusInfoPresent = " + uusInfoPresent);
 
             if (uusInfoPresent == 1) {
                 dc.uusInfo = new UUSInfo();
@@ -548,16 +586,16 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
                 dc.uusInfo.setDcs(p.readInt());
                 byte[] userData = p.createByteArray();
                 dc.uusInfo.setUserData(userData);
-                Log
-                .v(LOG_TAG, String.format("Incoming UUS : type=%d, dcs=%d, length=%d",
+                Rlog
+                .v(RILJ_LOG_TAG, String.format("Incoming UUS : type=%d, dcs=%d, length=%d",
                         dc.uusInfo.getType(), dc.uusInfo.getDcs(),
                         dc.uusInfo.getUserData().length));
-                Log.v(LOG_TAG, "Incoming UUS : data (string)="
+                Rlog.v(RILJ_LOG_TAG, "Incoming UUS : data (string)="
                         + new String(dc.uusInfo.getUserData()));
-                Log.v(LOG_TAG, "Incoming UUS : data (hex): "
+                Rlog.v(RILJ_LOG_TAG, "Incoming UUS : data (hex): "
                         + IccUtils.bytesToHexString(dc.uusInfo.getUserData()));
             } else {
-                Log.v(LOG_TAG, "Incoming UUS : NOT present!");
+                Rlog.v(RILJ_LOG_TAG, "Incoming UUS : NOT present!");
             }
 
             // Make sure there's a leading + on addresses with a TOA of 145
@@ -567,10 +605,10 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
 
             if (dc.isVoicePrivacy) {
                 mVoicePrivacyOnRegistrants.notifyRegistrants();
-                Log.d(LOG_TAG, "InCall VoicePrivacy is enabled");
+                Rlog.d(RILJ_LOG_TAG, "InCall VoicePrivacy is enabled");
             } else {
                 mVoicePrivacyOffRegistrants.notifyRegistrants();
-                Log.d(LOG_TAG, "InCall VoicePrivacy is disabled");
+                Rlog.d(RILJ_LOG_TAG, "InCall VoicePrivacy is disabled");
             }
         }
 
@@ -580,8 +618,8 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
     }
 
     @Override
-    protected DataCallState getDataCallState(Parcel p, int version) {
-        DataCallState dataCall = new DataCallState();
+    protected DataCallResponse getDataCallResponse(Parcel p, int version) {
+        DataCallResponse dataCall = new DataCallResponse();
 
         dataCall.version = version;
         dataCall.status = p.readInt();
@@ -590,9 +628,9 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         dataCall.active = p.readInt();
         dataCall.type = p.readString();
         dataCall.ifname = SystemProperties.get("net.cdma.ppp.interface");
-        if ((dataCall.status == DataConnection.FailCause.NONE.getErrorCode()) &&
+        if ((dataCall.status == DcFailCause.NONE.getErrorCode()) &&
                 TextUtils.isEmpty(dataCall.ifname)) {
-            throw new RuntimeException("getDataCallState, no ifname");
+            throw new RuntimeException("getDataCallResponse, no ifname");
         }
         String addresses = p.readString();
         if (!TextUtils.isEmpty(addresses)) {
@@ -617,7 +655,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             response[0] == com.android.internal.telephony.cdma.CallFailCause.ERROR_UNSPECIFIED) {
 
             // Far-end hangup returns ERROR_UNSPECIFIED, which shows "Call Lost" dialog.
-            Log.d(LOG_TAG, "Overriding ERROR_UNSPECIFIED fail cause with NORMAL_CLEARING.");
+            Rlog.d(RILJ_LOG_TAG, "Overriding ERROR_UNSPECIFIED fail cause with NORMAL_CLEARING.");
             response[0] = com.android.internal.telephony.cdma.CallFailCause.NORMAL_CLEARING;
         }
 
@@ -641,7 +679,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         // Scale cdmaDbm so Samsung's -95..-105 range for SIGNAL_STRENGTH_POOR
         // fits in AOSP's -95..-100 range
         if(response[2] > 95){
-        //   Log.d(LOG_TAG, "SignalStrength: Scaling cdmaDbm \"" + response[2] + "\" for smaller SIGNAL_STRENGTH_POOR bucket.");
+        //   Rlog.d(RILJ_LOG_TAG, "SignalStrength: Scaling cdmaDbm \"" + response[2] + "\" for smaller SIGNAL_STRENGTH_POOR bucket.");
            response[2] = ((response[2]-96)/2)+96;
         }
         // Framework takes care of the rest for us.
@@ -674,7 +712,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
     @Override
     protected Object
     responseSetupDataCall(Parcel p) {
-        DataCallState dataCall = new DataCallState();
+        DataCallResponse dataCall = new DataCallResponse();
         String strings[] = (String []) responseStrings(p);
 
         if (strings.length >= 2) {
@@ -683,7 +721,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             // We're responsible for starting/stopping the pppd_cdma service.
             if (!startPppdCdmaService(strings[1])) {
                 // pppd_cdma service didn't respond timely.
-                dataCall.status = FailCause.ERROR_UNSPECIFIED.getErrorCode();
+                dataCall.status = DcFailCause.ERROR_UNSPECIFIED.getErrorCode();
                 return dataCall;
             }
 
@@ -699,10 +737,10 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             // On rare occasion the pppd_cdma service is left active from a stale
             // session, causing the data call setup to fail.  Make sure that pppd_cdma
             // is stopped now, so that the next setup attempt may succeed.
-            Log.d(LOG_TAG, "Set ril.cdma.data_state=0 to make sure pppd_cdma is stopped.");
+            Rlog.d(RILJ_LOG_TAG, "Set ril.cdma.data_state=0 to make sure pppd_cdma is stopped.");
             SystemProperties.set("ril.cdma.data_state", "0");
 
-            dataCall.status = FailCause.ERROR_UNSPECIFIED.getErrorCode(); // Who knows?
+            dataCall.status = DcFailCause.ERROR_UNSPECIFIED.getErrorCode(); // Who knows?
         }
 
         return dataCall;
@@ -714,14 +752,14 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         // Connecting: Set ril.cdma.data_state=1 to (re)start pppd_cdma service,
         // which responds by setting ril.cdma.data_state=2 once connection is up.
         SystemProperties.set("ril.cdma.data_state", "1");
-        Log.d(LOG_TAG, "Set ril.cdma.data_state=1, waiting for ril.cdma.data_state=2.");
+        Rlog.d(RILJ_LOG_TAG, "Set ril.cdma.data_state=1, waiting for ril.cdma.data_state=2.");
 
         // Typically takes < 200 ms on my Epic, so sleep in 100 ms intervals.
         for (int i = 0; i < 10; i++) {
             try {Thread.sleep(100);} catch (InterruptedException e) {}
 
             if (SystemProperties.getInt("ril.cdma.data_state", 1) == 2) {
-                Log.d(LOG_TAG, "Got ril.cdma.data_state=2, connected.");
+                Rlog.d(RILJ_LOG_TAG, "Got ril.cdma.data_state=2, connected.");
                 return true;
             }
         }
@@ -731,13 +769,13 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             try {Thread.sleep(1000);} catch (InterruptedException e) {}
 
             if (SystemProperties.getInt("ril.cdma.data_state", 1) == 2) {
-                Log.d(LOG_TAG, "Got ril.cdma.data_state=2, connected.");
+                Rlog.d(RILJ_LOG_TAG, "Got ril.cdma.data_state=2, connected.");
                 return true;
             }
         }
 
         // Disconnect: Set ril.cdma.data_state=0 to stop pppd_cdma service.
-        Log.d(LOG_TAG, "Didn't get ril.cdma.data_state=2 timely, aborting.");
+        Rlog.d(RILJ_LOG_TAG, "Didn't get ril.cdma.data_state=2 timely, aborting.");
         SystemProperties.set("ril.cdma.data_state", "0");
 
         return false;
@@ -747,7 +785,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
     public void
     deactivateDataCall(int cid, int reason, Message result) {
         // Disconnect: Set ril.cdma.data_state=0 to stop pppd_cdma service.
-        Log.d(LOG_TAG, "Set ril.cdma.data_state=0.");
+        Rlog.d(RILJ_LOG_TAG, "Set ril.cdma.data_state=0.");
         SystemProperties.set("ril.cdma.data_state", "0");
 
         super.deactivateDataCall(cid, reason, result);
@@ -814,7 +852,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
                 sir.alertPitch == SignalToneUtil.IS95_CONST_IR_ALERT_MED    &&
                 sir.signal     == SignalToneUtil.IS95_CONST_IR_SIG_IS54B_L) {
 
-                Log.d(LOG_TAG, "Dropping \"" + responseToString(response) + " " +
+                Rlog.d(RILJ_LOG_TAG, "Dropping \"" + responseToString(response) + " " +
                       retToString(response, sir) + "\" to prevent \"ring of death\" bug.");
                 return;
             }
@@ -881,8 +919,8 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
         RILRequest rr = RILRequest.obtain(
                 RILConstants.RIL_REQUEST_SET_PREFERRED_NETWORK_TYPE, response);
 
-        rr.mp.writeInt(1);
-        rr.mp.writeInt(networkType);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(networkType);
 
         if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
                 + " : " + networkType);
@@ -920,7 +958,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
 
         public void setPreferedNetworkType(int networkType, Message response)
         {
-            Log.d(LOG_TAG, "Mobile Dataconnection is online setting it down");
+            Rlog.d(RILJ_LOG_TAG, "Mobile Dataconnection is online setting it down");
             mDesiredNetworkType = networkType;
             mNetworktypeResponse = response;
             ConnectivityManager cm =
@@ -938,7 +976,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
                 ConnectivityManager cm =
                     (ConnectivityManager)mContext.getSystemService(Context.CONNECTIVITY_SERVICE);
 
-                Log.d(LOG_TAG, "preferred NetworkType set upping Mobile Dataconnection");
+                Rlog.d(RILJ_LOG_TAG, "preferred NetworkType set upping Mobile Dataconnection");
 
                 cm.setMobileDataEnabled(true);
                 //everything done now call back that we have set the networktype
@@ -957,7 +995,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
             public void onReceive(Context context, Intent intent) {
                 String action = intent.getAction();
                 if (!action.equals(ConnectivityManager.CONNECTIVITY_ACTION)) {
-                    Log.w(LOG_TAG, "onReceived() called with " + intent);
+                    Rlog.w(RILJ_LOG_TAG, "onReceived() called with " + intent);
                     return;
                 }
                 boolean noConnectivity =
@@ -965,7 +1003,7 @@ public class SamsungCDMAv6RIL extends RIL implements CommandsInterface {
 
                 if (noConnectivity) {
                     //Ok dataconnection is down, now set the networktype
-                    Log.w(LOG_TAG, "Mobile Dataconnection is now down setting preferred NetworkType");
+                    Rlog.w(RILJ_LOG_TAG, "Mobile Dataconnection is now down setting preferred NetworkType");
                     stopListening();
                     sendPreferredNetworkType(mDesiredNetworkType, obtainMessage(MESSAGE_SET_PREFERRED_NETWORK_TYPE));
                     mDesiredNetworkType = -1;

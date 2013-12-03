@@ -17,38 +17,57 @@
 package com.android.internal.telephony.cat;
 
 public class CatResponseMessage {
-        CommandDetails cmdDet = null;
-        ResultCode resCode  = ResultCode.OK;
-        int usersMenuSelection = 0;
-        String usersInput  = null;
-        boolean usersYesNoSelection = false;
-        boolean usersConfirm = false;
+        CommandDetails mCmdDet = null;
+        ResultCode mResCode  = ResultCode.OK;
+        int mUsersMenuSelection = 0;
+        String mUsersInput  = null;
+        boolean mUsersYesNoSelection = false;
+        boolean mUsersConfirm = false;
+        boolean mIncludeAdditionalInfo = false;
+        int mAdditionalInfo = 0;
+        int mEventValue = -1;
+        byte[] mAddedInfo = null;
 
         public CatResponseMessage(CatCmdMessage cmdMsg) {
-            this.cmdDet = cmdMsg.mCmdDet;
+            mCmdDet = cmdMsg.mCmdDet;
         }
 
         public void setResultCode(ResultCode resCode) {
-            this.resCode = resCode;
+            mResCode = resCode;
         }
 
         public void setMenuSelection(int selection) {
-            this.usersMenuSelection = selection;
+            mUsersMenuSelection = selection;
         }
 
         public void setInput(String input) {
-            this.usersInput = input;
+            mUsersInput = input;
+        }
+
+        public void setEventDownload(int event, byte[] addedInfo) {
+            this.mEventValue = event;
+            this.mAddedInfo = addedInfo;
         }
 
         public void setYesNo(boolean yesNo) {
-            usersYesNoSelection = yesNo;
+            mUsersYesNoSelection = yesNo;
         }
 
         public void setConfirmation(boolean confirm) {
-            usersConfirm = confirm;
+            mUsersConfirm = confirm;
+        }
+
+        public void setAdditionalInfo(int info) {
+            mIncludeAdditionalInfo = true;
+            mAdditionalInfo = info;
+        }
+
+        public void setAdditionalInfo(boolean includeAdditionalInfo, int additionalInfo) {
+            this.mIncludeAdditionalInfo = includeAdditionalInfo;
+            this.mAdditionalInfo = additionalInfo;
         }
 
         CommandDetails getCmdDetails() {
-            return cmdDet;
+            return mCmdDet;
         }
     }

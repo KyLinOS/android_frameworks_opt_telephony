@@ -1,5 +1,8 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
+ * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ *
+ * Not a Contribution.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +25,10 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.SmsCbLocation;
 import android.telephony.SmsCbMessage;
 import android.telephony.cdma.CdmaSmsCbProgramData;
+import android.telephony.Rlog;
 import android.util.Log;
 
 import com.android.internal.telephony.GsmAlphabet.TextEncodingDetails;
-import com.android.internal.telephony.IccUtils;
 import com.android.internal.telephony.SmsConstants;
 import com.android.internal.telephony.SmsHeader;
 import com.android.internal.telephony.SmsMessageBase;
@@ -35,6 +38,7 @@ import com.android.internal.telephony.cdma.sms.CdmaSmsAddress;
 import com.android.internal.telephony.cdma.sms.CdmaSmsSubaddress;
 import com.android.internal.telephony.cdma.sms.SmsEnvelope;
 import com.android.internal.telephony.cdma.sms.UserData;
+import com.android.internal.telephony.uicc.IccUtils;
 import com.android.internal.util.BitwiseInputStream;
 import com.android.internal.util.HexDump;
 
@@ -45,7 +49,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.List;
 
 /**
  * TODO(cleanup): these constants are disturbing... are they not just
@@ -68,8 +71,9 @@ import java.util.List;
  *
  */
 public class SmsMessage extends SmsMessageBase {
-    static final String LOG_TAG = "CDMA";
+    static final String LOG_TAG = "SmsMessage";
     static private final String LOGGABLE_TAG = "CDMA:SMS";
+    private static final boolean VDBG = false;
 
     private final static byte TELESERVICE_IDENTIFIER                    = 0x00;
     private final static byte SERVICE_CATEGORY                          = 0x01;
@@ -110,7 +114,10 @@ public class SmsMessage extends SmsMessageBase {
             msg.parsePdu(pdu);
             return msg;
         } catch (RuntimeException ex) {
-            Log.e(LOG_TAG, "SMS PDU parsing failed: ", ex);
+            Rlog.e(LOG_TAG, "SMS PDU parsing failed: ", ex);
+            return null;
+        } catch (OutOfMemoryError e) {
+            Log.e(LOG_TAG, "SMS PDU parsing failed with out of memory: ", e);
             return null;
         }
     }
@@ -166,7 +173,16 @@ public class SmsMessage extends SmsMessageBase {
         }
 
         addr.origBytes = data;
-
+        // Add + for international numbers if + is not existing
+        if (addr.ton == addr.TON_INTERNATIONAL_OR_IP) {
+            if (data[0] != '+') {
+                addr.numberOfDigits ++;
+                byte[] tmpData = new byte[addr.numberOfDigits];
+                tmpData[0] = '+';
+                System.arraycopy(data, 0, tmpData, 1, count);
+                addr.origBytes = tmpData;
+            }
+        }
         subaddr.type = p.readInt(); // p_cur->sSubAddress.subaddressType
         subaddr.odd = p.readByte();     // p_cur->sSubAddress.odd
         count = p.readByte();           // p_cur->sSubAddress.number_of_digits
@@ -208,7 +224,7 @@ public class SmsMessage extends SmsMessageBase {
         // link the the filled objects to the SMS
         env.origAddress = addr;
         env.origSubaddress = subaddr;
-        msg.originatingAddress = addr;
+        msg.mOriginatingAddress = addr;
         msg.mEnvelope = env;
 
         // create byte stream representation for transportation through the layers.
@@ -231,16 +247,16 @@ public class SmsMessage extends SmsMessageBase {
         try {
             SmsMessage msg = new SmsMessage();
 
-            msg.indexOnIcc = index;
+            msg.mIndexOnIcc = index;
 
             // First byte is status: RECEIVED_READ, RECEIVED_UNREAD, STORED_SENT,
             // or STORED_UNSENT
             // See 3GPP2 C.S0023 3.4.27
             if ((data[0] & 1) == 0) {
-                Log.w(LOG_TAG, "SMS parsing failed: Trying to parse a free record");
+                Rlog.w(LOG_TAG, "SMS parsing failed: Trying to parse a free record");
                 return null;
             } else {
-                msg.statusOnIcc = data[0] & 0x07;
+                msg.mStatusOnIcc = data[0] & 0x07;
             }
 
             // Second byte is the MSG_LEN, length of the message
@@ -256,7 +272,7 @@ public class SmsMessage extends SmsMessageBase {
             msg.parsePduFromEfRecord(pdu);
             return msg;
         } catch (RuntimeException ex) {
-            Log.e(LOG_TAG, "SMS PDU parsing failed: ", ex);
+            Rlog.e(LOG_TAG, "SMS PDU parsing failed: ", ex);
             return null;
         }
 
@@ -266,7 +282,7 @@ public class SmsMessage extends SmsMessageBase {
      * Note: This function is a GSM specific functionality which is not supported in CDMA mode.
      */
     public static int getTPLayerLengthForPDU(String pdu) {
-        Log.w(LOG_TAG, "getTPLayerLengthForPDU: is not supported in CDMA mode.");
+        Rlog.w(LOG_TAG, "getTPLayerLengthForPDU: is not supported in CDMA mode.");
         return 0;
     }
 
@@ -278,7 +294,6 @@ public class SmsMessage extends SmsMessageBase {
      * value.  Is there no similar notion in CDMA? Or do we just not
      * have it hooked up?
      */
-
     /**
      * Get an SMS-SUBMIT PDU for a destination address and a message
      *
@@ -309,6 +324,34 @@ public class SmsMessage extends SmsMessageBase {
         uData.payloadStr = message;
         uData.userDataHeader = smsHeader;
         return privateGetSubmitPdu(destAddr, statusReportRequested, uData);
+    }
+
+    /**
+     * Get an SMS-SUBMIT PDU for a destination address and a message
+     *
+     * @param scAddr                Service Centre address.  Null means use default.
+     * @param destAddr              Address of the recipient.
+     * @param message               String representation of the message payload.
+     * @param statusReportRequested Indicates whether a report is requested for this message.
+     * @param smsHeader             Array containing the data for the User Data Header, preceded
+     *                              by the Element Identifiers.
+     * @param priority              Priority level of the message
+     * @return a <code>SubmitPdu</code> containing the encoded SC
+     *         address, if applicable, and the encoded message.
+     *         Returns null on encode error.
+     * @hide
+     */
+    public static SubmitPdu getSubmitPduWithPriority(String scAddr, String destAddr, String message,
+            boolean statusReportRequested, SmsHeader smsHeader, int priority) {
+
+        if (message == null || destAddr == null) {
+            return null;
+        }
+
+        UserData uData = new UserData();
+        uData.payloadStr = message;
+        uData.userDataHeader = smsHeader;
+        return privateGetSubmitPdu(destAddr, statusReportRequested, uData, priority);
     }
 
     /**
@@ -368,8 +411,9 @@ public class SmsMessage extends SmsMessageBase {
     /**
      * Note: This function is a GSM specific functionality which is not supported in CDMA mode.
      */
+    @Override
     public int getProtocolIdentifier() {
-        Log.w(LOG_TAG, "getProtocolIdentifier: is not supported in CDMA mode.");
+        Rlog.w(LOG_TAG, "getProtocolIdentifier: is not supported in CDMA mode.");
         // (3GPP TS 23.040): "no interworking, but SME to SME protocol":
         return 0;
     }
@@ -377,8 +421,9 @@ public class SmsMessage extends SmsMessageBase {
     /**
      * Note: This function is a GSM specific functionality which is not supported in CDMA mode.
      */
+    @Override
     public boolean isReplace() {
-        Log.w(LOG_TAG, "isReplace: is not supported in CDMA mode.");
+        Rlog.w(LOG_TAG, "isReplace: is not supported in CDMA mode.");
         return false;
     }
 
@@ -386,14 +431,16 @@ public class SmsMessage extends SmsMessageBase {
      * {@inheritDoc}
      * Note: This function is a GSM specific functionality which is not supported in CDMA mode.
      */
+    @Override
     public boolean isCphsMwiMessage() {
-        Log.w(LOG_TAG, "isCphsMwiMessage: is not supported in CDMA mode.");
+        Rlog.w(LOG_TAG, "isCphsMwiMessage: is not supported in CDMA mode.");
         return false;
     }
 
     /**
      * {@inheritDoc}
      */
+    @Override
     public boolean isMWIClearMessage() {
         return ((mBearerData != null) && (mBearerData.numberOfMessages == 0));
     }
@@ -401,6 +448,7 @@ public class SmsMessage extends SmsMessageBase {
     /**
      * {@inheritDoc}
      */
+    @Override
     public boolean isMWISetMessage() {
         return ((mBearerData != null) && (mBearerData.numberOfMessages > 0));
     }
@@ -408,6 +456,7 @@ public class SmsMessage extends SmsMessageBase {
     /**
      * {@inheritDoc}
      */
+    @Override
     public boolean isMwiDontStore() {
         return ((mBearerData != null) &&
                 (mBearerData.numberOfMessages > 0) &&
@@ -419,11 +468,13 @@ public class SmsMessage extends SmsMessageBase {
      * For not interfering with status codes from GSM, this status code is
      * shifted to the bits 31-16.
      */
+    @Override
     public int getStatus() {
         return (status << 16);
     }
 
     /** Return true iff the bearer data message type is DELIVERY_ACK. */
+    @Override
     public boolean isStatusReportMessage() {
         return (mBearerData.messageType == BearerData.MESSAGE_TYPE_DELIVERY_ACK);
     }
@@ -431,8 +482,9 @@ public class SmsMessage extends SmsMessageBase {
     /**
      * Note: This function is a GSM specific functionality which is not supported in CDMA mode.
      */
+    @Override
     public boolean isReplyPathPresent() {
-        Log.w(LOG_TAG, "isReplyPathPresent: is not supported in CDMA mode.");
+        Rlog.w(LOG_TAG, "isReplyPathPresent: is not supported in CDMA mode.");
         return false;
     }
 
@@ -487,7 +539,7 @@ public class SmsMessage extends SmsMessageBase {
     private void parsePdu(byte[] pdu) {
         ByteArrayInputStream bais = new ByteArrayInputStream(pdu);
         DataInputStream dis = new DataInputStream(bais);
-        byte length;
+        int length;
         int bearerDataLength;
         SmsEnvelope env = new SmsEnvelope();
         CdmaSmsAddress addr = new CdmaSmsAddress();
@@ -502,8 +554,15 @@ public class SmsMessage extends SmsMessageBase {
             addr.ton = dis.readByte();
             addr.numberPlan = dis.readByte();
 
-            length = dis.readByte();
+            length = dis.readUnsignedByte();
             addr.numberOfDigits = length;
+
+            // sanity check on the length
+            if (length > pdu.length) {
+                throw new RuntimeException(
+                        "createFromPdu: Invalid pdu, addr.numberOfDigits " + length
+                        + " > pdu len " + pdu.length);
+            }
             addr.origBytes = new byte[length];
             dis.read(addr.origBytes, 0, length); // digits
 
@@ -515,15 +574,24 @@ public class SmsMessage extends SmsMessageBase {
 
             //encoded BearerData:
             bearerDataLength = dis.readInt();
+            // sanity check on the length
+            if (bearerDataLength > pdu.length) {
+                throw new RuntimeException(
+                        "createFromPdu: Invalid pdu, bearerDataLength " + bearerDataLength
+                        + " > pdu len " + pdu.length);
+            }
             env.bearerData = new byte[bearerDataLength];
             dis.read(env.bearerData, 0, bearerDataLength);
             dis.close();
+        } catch (IOException ex) {
+            throw new RuntimeException(
+                    "createFromPdu: conversion from byte array to object failed: " + ex, ex);
         } catch (Exception ex) {
-            Log.e(LOG_TAG, "createFromPdu: conversion from byte array to object failed: " + ex);
+            Rlog.e(LOG_TAG, "createFromPdu: conversion from byte array to object failed: " + ex);
         }
 
         // link the filled objects to this SMS
-        originatingAddress = addr;
+        mOriginatingAddress = addr;
         env.origAddress = addr;
         mEnvelope = env;
         mPdu = pdu;
@@ -546,7 +614,7 @@ public class SmsMessage extends SmsMessageBase {
 
             while (dis.available() > 0) {
                 int parameterId = dis.readByte();
-                int parameterLen = dis.readByte();
+                int parameterLen = dis.readUnsignedByte();
                 byte[] parameterData = new byte[parameterLen];
 
                 switch (parameterId) {
@@ -557,7 +625,7 @@ public class SmsMessage extends SmsMessageBase {
                          * this message
                          */
                         env.teleService = dis.readUnsignedShort();
-                        Log.i(LOG_TAG, "teleservice = " + env.teleService);
+                        Rlog.i(LOG_TAG, "teleservice = " + env.teleService);
                         break;
                     case SERVICE_CATEGORY:
                         /*
@@ -603,18 +671,18 @@ public class SmsMessage extends SmsMessageBase {
 
                             } else if (addr.numberMode == CdmaSmsAddress.NUMBER_MODE_DATA_NETWORK) {
                                 if (numberType == 2)
-                                    Log.e(LOG_TAG, "TODO: Originating Addr is email id");
+                                    Rlog.e(LOG_TAG, "TODO: Originating Addr is email id");
                                 else
-                                    Log.e(LOG_TAG,
+                                    Rlog.e(LOG_TAG,
                                           "TODO: Originating Addr is data network address");
                             } else {
-                                Log.e(LOG_TAG, "Originating Addr is of incorrect type");
+                                Rlog.e(LOG_TAG, "Originating Addr is of incorrect type");
                             }
                         } else {
-                            Log.e(LOG_TAG, "Incorrect Digit mode");
+                            Rlog.e(LOG_TAG, "Incorrect Digit mode");
                         }
                         addr.origBytes = data;
-                        Log.i(LOG_TAG, "Originating Addr=" + addr.toString());
+                        Rlog.i(LOG_TAG, "Originating Addr=" + addr.toString());
                         break;
                     case ORIGINATING_SUB_ADDRESS:
                     case DESTINATION_SUB_ADDRESS:
@@ -655,11 +723,11 @@ public class SmsMessage extends SmsMessageBase {
             bais.close();
             dis.close();
         } catch (Exception ex) {
-            Log.e(LOG_TAG, "parsePduFromEfRecord: conversion from pdu to SmsMessage failed" + ex);
+            Rlog.e(LOG_TAG, "parsePduFromEfRecord: conversion from pdu to SmsMessage failed" + ex);
         }
 
         // link the filled objects to this SMS
-        originatingAddress = addr;
+        mOriginatingAddress = addr;
         env.origAddress = addr;
         env.origSubaddress = subAddr;
         mEnvelope = env;
@@ -679,36 +747,36 @@ public class SmsMessage extends SmsMessageBase {
             if (mEnvelope.bearerData != null) {
                 mBearerData.numberOfMessages = 0x000000FF & mEnvelope.bearerData[0];
             }
-            if (false) {
-                Log.d(LOG_TAG, "parseSms: get MWI " +
+            if (VDBG) {
+                Rlog.d(LOG_TAG, "parseSms: get MWI " +
                       Integer.toString(mBearerData.numberOfMessages));
             }
             return;
         }
         mBearerData = BearerData.decode(mEnvelope.bearerData);
-        if (Log.isLoggable(LOGGABLE_TAG, Log.VERBOSE)) {
-            Log.d(LOG_TAG, "MT raw BearerData = '" +
+        if (Rlog.isLoggable(LOGGABLE_TAG, Log.VERBOSE)) {
+            Rlog.d(LOG_TAG, "MT raw BearerData = '" +
                       HexDump.toHexString(mEnvelope.bearerData) + "'");
-            Log.d(LOG_TAG, "MT (decoded) BearerData = " + mBearerData);
+            Rlog.d(LOG_TAG, "MT (decoded) BearerData = " + mBearerData);
         }
-        messageRef = mBearerData.messageId;
+        mMessageRef = mBearerData.messageId;
         if (mBearerData.userData != null) {
-            userData = mBearerData.userData.payload;
-            userDataHeader = mBearerData.userData.userDataHeader;
-            messageBody = mBearerData.userData.payloadStr;
+            mUserData = mBearerData.userData.payload;
+            mUserDataHeader = mBearerData.userData.userDataHeader;
+            mMessageBody = mBearerData.userData.payloadStr;
         }
 
-        if (originatingAddress != null) {
-            originatingAddress.address = new String(originatingAddress.origBytes);
-            if (false) Log.v(LOG_TAG, "SMS originating address: "
-                    + originatingAddress.address);
+        if (mOriginatingAddress != null) {
+            mOriginatingAddress.address = new String(mOriginatingAddress.origBytes);
+            if (VDBG) Rlog.v(LOG_TAG, "SMS originating address: "
+                    + mOriginatingAddress.address);
         }
 
         if (mBearerData.msgCenterTimeStamp != null) {
-            scTimeMillis = mBearerData.msgCenterTimeStamp.toMillis(true);
+            mScTimeMillis = mBearerData.msgCenterTimeStamp.toMillis(true);
         }
 
-        if (false) Log.d(LOG_TAG, "SMS SC timestamp: " + scTimeMillis);
+        if (VDBG) Rlog.d(LOG_TAG, "SMS SC timestamp: " + mScTimeMillis);
 
         // Message Type (See 3GPP2 C.S0015-B, v2, 4.5.1)
         if (mBearerData.messageType == BearerData.MESSAGE_TYPE_DELIVERY_ACK) {
@@ -720,8 +788,8 @@ public class SmsMessage extends SmsMessageBase {
             // message without this subparameter is assumed to
             // indicate successful delivery (status == 0).
             if (! mBearerData.messageStatusSet) {
-                Log.d(LOG_TAG, "DELIVERY_ACK message without msgStatus (" +
-                        (userData == null ? "also missing" : "does have") +
+                Rlog.d(LOG_TAG, "DELIVERY_ACK message without msgStatus (" +
+                        (mUserData == null ? "also missing" : "does have") +
                         " userData).");
                 status = 0;
             } else {
@@ -732,11 +800,11 @@ public class SmsMessage extends SmsMessageBase {
             throw new RuntimeException("Unsupported message type: " + mBearerData.messageType);
         }
 
-        if (messageBody != null) {
-            if (false) Log.v(LOG_TAG, "SMS message body: '" + messageBody + "'");
+        if (mMessageBody != null) {
+            if (VDBG) Rlog.v(LOG_TAG, "SMS message body: '" + mMessageBody + "'");
             parseMessageBody();
-        } else if ((userData != null) && (false)) {
-            Log.v(LOG_TAG, "SMS payload: '" + IccUtils.bytesToHexString(userData) + "'");
+        } else if ((mUserData != null) && VDBG) {
+            Rlog.v(LOG_TAG, "SMS payload: '" + IccUtils.bytesToHexString(mUserData) + "'");
         }
     }
 
@@ -746,12 +814,12 @@ public class SmsMessage extends SmsMessageBase {
     SmsCbMessage parseBroadcastSms() {
         BearerData bData = BearerData.decode(mEnvelope.bearerData, mEnvelope.serviceCategory);
         if (bData == null) {
-            Log.w(LOG_TAG, "BearerData.decode() returned null");
+            Rlog.w(LOG_TAG, "BearerData.decode() returned null");
             return null;
         }
 
-        if (Log.isLoggable(LOGGABLE_TAG, Log.VERBOSE)) {
-            Log.d(LOG_TAG, "MT raw BearerData = " + HexDump.toHexString(mEnvelope.bearerData));
+        if (Rlog.isLoggable(LOGGABLE_TAG, Log.VERBOSE)) {
+            Rlog.d(LOG_TAG, "MT raw BearerData = " + HexDump.toHexString(mEnvelope.bearerData));
         }
 
         String plmn = SystemProperties.get(TelephonyProperties.PROPERTY_OPERATOR_NUMERIC);
@@ -791,9 +859,9 @@ public class SmsMessage extends SmsMessageBase {
         int msgId = SystemProperties.getInt(TelephonyProperties.PROPERTY_CDMA_MSG_ID, 1);
         String nextMsgId = Integer.toString((msgId % 0xFFFF) + 1);
         SystemProperties.set(TelephonyProperties.PROPERTY_CDMA_MSG_ID, nextMsgId);
-        if (Log.isLoggable(LOGGABLE_TAG, Log.VERBOSE)) {
-            Log.d(LOG_TAG, "next " + TelephonyProperties.PROPERTY_CDMA_MSG_ID + " = " + nextMsgId);
-            Log.d(LOG_TAG, "readback gets " +
+        if (Rlog.isLoggable(LOGGABLE_TAG, Log.VERBOSE)) {
+            Rlog.d(LOG_TAG, "next " + TelephonyProperties.PROPERTY_CDMA_MSG_ID + " = " + nextMsgId);
+            Rlog.d(LOG_TAG, "readback gets " +
                     SystemProperties.get(TelephonyProperties.PROPERTY_CDMA_MSG_ID));
         }
         return msgId;
@@ -805,6 +873,15 @@ public class SmsMessage extends SmsMessageBase {
      */
     private static SubmitPdu privateGetSubmitPdu(String destAddrStr, boolean statusReportRequested,
             UserData userData) {
+        return privateGetSubmitPdu(destAddrStr, statusReportRequested, userData, -1);
+    }
+
+    /**
+     * Creates BearerData and Envelope from parameters for a Submit SMS.
+     * @return byte stream for SubmitPdu.
+     */
+    private static SubmitPdu privateGetSubmitPdu(String destAddrStr, boolean statusReportRequested,
+            UserData userData, int priority) {
 
         /**
          * TODO(cleanup): give this function a more meaningful name.
@@ -833,13 +910,17 @@ public class SmsMessage extends SmsMessageBase {
         bearerData.userAckReq = false;
         bearerData.readAckReq = false;
         bearerData.reportReq = false;
+        if (priority != -1) {
+            bearerData.priorityIndicatorSet = true;
+            bearerData.priority = priority;
+        }
 
         bearerData.userData = userData;
 
         byte[] encodedBearerData = BearerData.encode(bearerData);
-        if (Log.isLoggable(LOGGABLE_TAG, Log.VERBOSE)) {
-            Log.d(LOG_TAG, "MO (encoded) BearerData = " + bearerData);
-            Log.d(LOG_TAG, "MO raw BearerData = '" + HexDump.toHexString(encodedBearerData) + "'");
+        if (Rlog.isLoggable(LOGGABLE_TAG, Log.VERBOSE)) {
+            Rlog.d(LOG_TAG, "MO (encoded) BearerData = " + bearerData);
+            Rlog.d(LOG_TAG, "MO raw BearerData = '" + HexDump.toHexString(encodedBearerData) + "'");
         }
         if (encodedBearerData == null) return null;
 
@@ -887,7 +968,7 @@ public class SmsMessage extends SmsMessageBase {
             pdu.encodedScAddress = null;
             return pdu;
         } catch(IOException ex) {
-            Log.e(LOG_TAG, "creating SubmitPdu failed: " + ex);
+            Rlog.e(LOG_TAG, "creating SubmitPdu failed: " + ex);
         }
         return null;
     }
@@ -934,7 +1015,7 @@ public class SmsMessage extends SmsMessageBase {
 
             mPdu = baos.toByteArray();
         } catch (IOException ex) {
-            Log.e(LOG_TAG, "createPdu: conversion from object to byte array failed: " + ex);
+            Rlog.e(LOG_TAG, "createPdu: conversion from object to byte array failed: " + ex);
         }
     }
 
@@ -998,8 +1079,64 @@ public class SmsMessage extends SmsMessageBase {
     /**
      * Returns the list of service category program data, if present.
      * @return a list of CdmaSmsCbProgramData objects, or null if not present
+     * @hide
      */
-    ArrayList<CdmaSmsCbProgramData> getSmsCbProgramData() {
+    public ArrayList<CdmaSmsCbProgramData> getSmsCbProgramData() {
         return mBearerData.serviceCategoryProgramData;
+    }
+
+    /**
+    * CT WDP header contains WDP Msg Identifier and WDP Userdata
+    */
+    protected boolean processCdmaCTWdpHeader(SmsMessage sms) {
+        int subparamId = 0;
+        int subParamLen = 0;
+        int msgID = 0;
+        boolean decodeSuccess = false;
+        try {
+            BitwiseInputStream inStream = new BitwiseInputStream(sms.getUserData());
+
+            /* Decode WDP Messsage Identifier */
+            subparamId = inStream.read(8);
+            if (subparamId != 0) {
+                Log.e(LOG_TAG, "Invalid WDP SubparameterId");
+                return false;
+            }
+            subParamLen = inStream.read(8);
+            if (subParamLen != 3) {
+                Log.e(LOG_TAG, "Invalid WDP subparameter length");
+                return false;
+            }
+            sms.mBearerData.messageType = inStream.read(4);
+            msgID = inStream.read(8) << 8;
+            msgID |= inStream.read(8);
+            sms.mBearerData.hasUserDataHeader = (inStream.read(1) == 1);
+            if (sms.mBearerData.hasUserDataHeader) {
+                Log.e(LOG_TAG, "Invalid WDP UserData header value");
+                return false;
+            }
+            inStream.skip(3);
+            sms.mBearerData.messageId = msgID;
+            sms.mMessageRef = msgID;
+
+            /* Decode WDP User Data */
+            subparamId = inStream.read(8);
+            subParamLen = inStream.read(8) * 8;
+            sms.mBearerData.userData.msgEncoding = inStream.read(5);
+            int consumedBits = 5;
+            if (sms.mBearerData.userData.msgEncoding != 0) {
+                Log.e(LOG_TAG, "Invalid WDP encoding");
+                return false;
+            }
+            sms.mBearerData.userData.numFields = inStream.read(8);
+            consumedBits += 8;
+            int dataBits = subParamLen - consumedBits;
+            sms.mBearerData.userData.payload = inStream.readByteArray(dataBits);
+            sms.mUserData = sms.mBearerData.userData.payload;
+            decodeSuccess = true;
+        } catch (BitwiseInputStream.AccessException ex) {
+            Log.e(LOG_TAG, "CT WDP Header decode failed: " + ex);
+        }
+        return decodeSuccess;
     }
 }

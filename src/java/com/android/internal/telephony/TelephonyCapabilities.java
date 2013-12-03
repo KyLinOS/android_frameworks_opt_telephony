@@ -16,7 +16,7 @@
 
 package com.android.internal.telephony;
 
-import android.util.Log;
+import android.telephony.Rlog;
 
 import com.android.internal.telephony.Phone;
 
@@ -45,7 +45,8 @@ public class TelephonyCapabilities {
      * otherwise.
      */
     public static boolean supportsEcm(Phone phone) {
-        return (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA);
+        return (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA ||
+                phone.getPhoneType() == PhoneConstants.PHONE_TYPE_IMS);
     }
 
     /**
@@ -70,12 +71,13 @@ public class TelephonyCapabilities {
     }
 
     /**
-     * Return true if the current phone can retrieve the voice message count.
-     *
-     * Currently this is assumed to be true on CDMA phones and false otherwise.
+     * Return true if the current phone supports voice message count
+     * and the count is available.
+     * Value of -1 indicates that the count is unavailable.
+     * Both CDMA and GSM phones support voice message count
      */
     public static boolean supportsVoiceMessageCount(Phone phone) {
-        return (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA);
+        return (phone.getVoiceMessageCount() != -1);
     }
 
     /**
@@ -104,7 +106,7 @@ public class TelephonyCapabilities {
         } else if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA) {
             return com.android.internal.R.string.meid;
         } else {
-            Log.w(LOG_TAG, "getDeviceIdLabel: no known label for phone "
+            Rlog.w(LOG_TAG, "getDeviceIdLabel: no known label for phone "
                   + phone.getPhoneName());
             return 0;
         }
@@ -122,7 +124,16 @@ public class TelephonyCapabilities {
      */
     public static boolean supportsConferenceCallManagement(Phone phone) {
         return ((phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM)
-                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_SIP));
+                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_SIP)
+                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_IMS));
+    }
+
+    /**
+     * Return true if the current phone supports the ability to upgrade VO to VT call
+     * or downgrade VT to VO call
+     */
+    public static boolean supportsCallModify(Phone phone) {
+        return (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_IMS);
     }
 
     /**
@@ -136,7 +147,8 @@ public class TelephonyCapabilities {
      */
     public static boolean supportsHoldAndUnhold(Phone phone) {
         return ((phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM)
-                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_SIP));
+                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_SIP)
+                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_IMS));
     }
 
     /**
@@ -155,7 +167,8 @@ public class TelephonyCapabilities {
      */
     public static boolean supportsAnswerAndHold(Phone phone) {
         return ((phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM)
-                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_SIP));
+                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_SIP)
+                || (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_IMS));
     }
 
     /**
@@ -163,7 +176,7 @@ public class TelephonyCapabilities {
      * (Abbreviated Dialing Numbers).
      *
      * Currently this returns true when the phone type is GSM
-     * ({@link Phone#PHONE_TYPE_GSM}).
+     * ({@link PhoneConstants#PHONE_TYPE_GSM}).
      *
      * This is using int for an argument for letting apps outside
      * Phone process access to it, while other methods in this class is
@@ -175,7 +188,8 @@ public class TelephonyCapabilities {
      * something more appropriate.
      */
     public static boolean supportsAdn(int phoneType) {
-        return phoneType == PhoneConstants.PHONE_TYPE_GSM;
+        return ((phoneType == PhoneConstants.PHONE_TYPE_GSM)
+                || (phoneType == PhoneConstants.PHONE_TYPE_CDMA));
     }
 
     /**

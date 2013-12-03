@@ -1,5 +1,7 @@
 /*
  * Copyright (C) 2006 The Android Open Source Project
+ * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Not a Contribution.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +18,12 @@
 
 package com.android.internal.telephony;
 
+import com.android.internal.telephony.cdma.CdmaSmsBroadcastConfigInfo;
 import com.android.internal.telephony.gsm.SmsBroadcastConfigInfo;
+import com.android.internal.telephony.uicc.IccCardStatus;
 
 import android.os.Message;
 import android.os.Handler;
-import android.util.Log;
 
 /**
  * {@hide}
@@ -108,7 +111,16 @@ public interface CommandsInterface {
     //***** Methods
     RadioState getRadioState();
 
-    void getVoiceRadioTechnology(Message result);
+    /**
+     * response.obj.result is an int[2]
+     *
+     * response.obj.result[0] is registration state
+     *                        0 - Not registered
+     *                        1 - Registered
+     * response.obj.result[1] is of type const RIL_IMS_SMS_Format,
+     *                        corresponds to sms format used for SMS over IMS.
+     */
+    void getImsRegistrationState(Message result);
 
     /**
      * Fires on any RadioState transition
@@ -123,6 +135,8 @@ public interface CommandsInterface {
 
     void registerForVoiceRadioTechChanged(Handler h, int what, Object obj);
     void unregisterForVoiceRadioTechChanged(Handler h);
+    void registerForImsNetworkStateChanged(Handler h, int what, Object obj);
+    void unregisterForImsNetworkStateChanged(Handler h);
 
     /**
      * Fires on any transition into RadioState.isOn()
@@ -178,6 +192,16 @@ public interface CommandsInterface {
     void unregisterForInCallVoicePrivacyOn(Handler h);
     void registerForInCallVoicePrivacyOff(Handler h, int what, Object obj);
     void unregisterForInCallVoicePrivacyOff(Handler h);
+
+    /**
+     * Handlers for subscription status change indications.
+     *
+     * @param h Handler for subscription status change messages.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForSubscriptionStatusChanged(Handler h, int what, Object obj);
+    void unregisterForSubscriptionStatusChanged(Handler h);
 
     /**
      * unlike the register* methods, there's only one new 3GPP format SMS handler.
@@ -384,6 +408,29 @@ public interface CommandsInterface {
     //void unSetSuppServiceNotifications(Handler h);
 
     /**
+     * Sets the handler for Alpha Notification during STK Call Control.
+     * Unlike the register* methods, there's only one notification handler
+     *
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void setOnCatCcAlphaNotify(Handler h, int what, Object obj);
+    void unSetOnCatCcAlphaNotify(Handler h);
+
+    /**
+     * Sets the handler for notifying Suplementary Services (SS)
+     * Data during STK Call Control.
+     * Unlike the register* methods, there's only one notification handler
+     *
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void setOnSs(Handler h, int what, Object obj);
+    void unSetOnSs(Handler h);
+
+    /**
      * Sets the handler for Event Notifications for CDMA Display Info.
      * Unlike the register* methods, there's only one notification handler
      *
@@ -553,6 +600,17 @@ public interface CommandsInterface {
      void unregisterForRilConnected(Handler h);
 
     /**
+     * Registers the handler for voice system id changed events
+     *
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     *
+     */
+    void registerForUnsolVoiceSystemId(Handler h, int what, Object obj);
+    void unregisterForUnsolVoiceSystemId(Handler h);
+
+    /**
      * Supply the ICC PIN to the ICC card
      *
      *  returned message
@@ -687,7 +745,7 @@ public interface CommandsInterface {
 
     void changeBarringPassword(String facility, String oldPwd, String newPwd, Message result);
 
-    void supplyNetworkDepersonalization(String netpin, Message result);
+    void supplyDepersonalization(String netpin, int type, Message result);
 
     /**
      *  returned message
@@ -704,7 +762,7 @@ public interface CommandsInterface {
      *  retMsg.obj = AsyncResult ar
      *  ar.exception carries exception on failure
      *  ar.userObject contains the orignal value of result.obj
-     *  ar.result contains a List of DataCallState
+     *  ar.result contains a List of DataCallResponse
      *  @deprecated Do not use.
      */
     @Deprecated
@@ -715,7 +773,7 @@ public interface CommandsInterface {
      *  retMsg.obj = AsyncResult ar
      *  ar.exception carries exception on failure
      *  ar.userObject contains the orignal value of result.obj
-     *  ar.result contains a List of DataCallState
+     *  ar.result contains a List of DataCallResponse
      */
     void getDataCallList(Message result);
 
@@ -995,10 +1053,46 @@ public interface CommandsInterface {
     void sendSMS (String smscPDU, String pdu, Message response);
 
     /**
+     * Send an SMS message, Identical to sendSMS,
+     * except that more messages are expected to be sent soon.
+     * smscPDU is smsc address in PDU form GSM BCD format prefixed
+     *      by a length byte (as expected by TS 27.005) or NULL for default SMSC
+     * pdu is SMS in PDU format as an ASCII hex string
+     *      less the SMSC address
+     */
+    void sendSMSExpectMore (String smscPDU, String pdu, Message response);
+
+
+    /**
      * @param pdu is CDMA-SMS in internal pseudo-PDU format
      * @param response sent when operation completes
      */
     void sendCdmaSms(byte[] pdu, Message response);
+
+    /**
+     * send SMS over IMS with 3GPP/GSM SMS format
+     * @param smscPDU is smsc address in PDU form GSM BCD format prefixed
+     *      by a length byte (as expected by TS 27.005) or NULL for default SMSC
+     * @param pdu is SMS in PDU format as an ASCII hex string
+     *      less the SMSC address
+     * @param retry indicates if this is a retry; 0 == not retry, nonzero = retry
+     * @param messageRef valid field if retry is set to nonzero.
+     *        Contains messageRef from RIL_SMS_Response corresponding to failed MO SMS
+     * @param response sent when operation completes
+     */
+    void sendImsGsmSms (String smscPDU, String pdu, int retry, int messageRef,
+            Message response);
+
+    /**
+     * send SMS over IMS with 3GPP2/CDMA SMS format
+     * @param pdu is CDMA-SMS in internal pseudo-PDU format
+     * @param response sent when operation completes
+     * @param retry indicates if this is a retry; 0 == not retry, nonzero = retry
+     * @param messageRef valid field if retry is set to nonzero.
+     *        Contains messageRef from RIL_SMS_Response corresponding to failed MO SMS
+     * @param response sent when operation completes
+     */
+    void sendImsCdmaSms(byte[] pdu, int retry, int messageRef, Message response);
 
     /**
      * Deletes the specified SMS record from SIM memory (EF_SMS).
@@ -1470,8 +1564,8 @@ public interface CommandsInterface {
 
     /**
      * Setup a packet data connection On successful completion, the result
-     * message will return a {@link DataCallState} object containing the connection
-     * information.
+     * message will return a {@link com.android.internal.telephony.dataconnection.DataCallResponse}
+     * object containing the connection information.
      *
      * @param radioTechnology
      *            indicates whether to setup connection on radio technology CDMA
@@ -1522,11 +1616,10 @@ public interface CommandsInterface {
     /**
      * Configure cdma cell broadcast SMS.
      *
-     * @param result
+     * @param response
      *            Callback message is empty on completion
      */
-    // TODO: Change the configValuesArray to a RIL_BroadcastSMSConfig
-    public void setCdmaBroadcastConfig(int[] configValuesArray, Message result);
+    public void setCdmaBroadcastConfig(CdmaSmsBroadcastConfigInfo[] configs, Message response);
 
     /**
      * Query the current configuration of cdma cell broadcast SMS.
@@ -1557,8 +1650,8 @@ public interface CommandsInterface {
      * is a tri-state return value as for a period of time
      * the mode may be unknown.
      *
-     * @return {@link Phone#LTE_ON_CDMA_UNKNOWN}, {@link Phone#LTE_ON_CDMA_FALSE}
-     * or {@link Phone#LTE_ON_CDMA_TRUE}
+     * @return {@link PhoneConstants#LTE_ON_CDMA_UNKNOWN}, {@link PhoneConstants#LTE_ON_CDMA_FALSE}
+     * or {@link PhoneConstants#LTE_ON_CDMA_TRUE}
      */
     public int getLteOnCdmaMode();
 
@@ -1569,6 +1662,18 @@ public interface CommandsInterface {
     public int getLteOnGsmMode();
 
     /**
+     * Get the data call profile information from the modem
+     *
+     * @param appType
+     *          Callback message containing the count and the list of {@link
+     *          RIL_DataCallProfileInfo}
+     *
+     * @param result
+     *          Callback message
+     */
+    public void getDataCallProfile(int appType, Message result);
+
+    /**
      * Request the ISIM application on the UICC to perform the AKA
      * challenge/response algorithm for IMS authentication. The nonce string
      * and challenge response are Base64 encoded Strings.
@@ -1577,6 +1682,48 @@ public interface CommandsInterface {
      * @param response a callback message with the String response in the obj field
      */
     public void requestIsimAuthentication(String nonce, Message response);
+
+    /**
+     * Get the current Voice Radio Technology.
+     *
+     * AsyncResult.result is an int array with the first value
+     * being one of the ServiceState.RIL_RADIO_TECHNOLOGY_xxx values.
+     *
+     * @param result is sent back to handler and result.obj is a AsyncResult
+     */
+    void getVoiceRadioTechnology(Message result);
+
+    /**
+     * Return the current set of CellInfo records
+     *
+     * AsyncResult.result is a of Collection<CellInfo>
+     *
+     * @param result is sent back to handler and result.obj is a AsyncResult
+     */
+    void getCellInfoList(Message result);
+
+    /**
+     * Sets the minimum time in milli-seconds between when RIL_UNSOL_CELL_INFO_LIST
+     * should be invoked.
+     *
+     * The default, 0, means invoke RIL_UNSOL_CELL_INFO_LIST when any of the reported
+     * information changes. Setting the value to INT_MAX(0x7fffffff) means never issue
+     * A RIL_UNSOL_CELL_INFO_LIST.
+     *
+     *
+
+     * @param rateInMillis is sent back to handler and result.obj is a AsyncResult
+     * @param response.obj is AsyncResult ar when sent to associated handler
+     *                        ar.exception carries exception on failure or null on success
+     *                        otherwise the error.
+     */
+    void setCellInfoListRate(int rateInMillis, Message response);
+
+    /**
+     * Fires when RIL_UNSOL_CELL_INFO_LIST is received from the RIL.
+     */
+    void registerForCellInfoList(Handler h, int what, Object obj);
+    void unregisterForCellInfoList(Handler h);
 
     /**
      * Notifiy that we are testing an emergency call
@@ -1596,4 +1743,61 @@ public interface CommandsInterface {
      */
     void setOnCatSendSmsResult(Handler h, int what, Object obj);
     void unSetOnCatSendSmsResult(Handler h);
+
+    /**
+     * @return version of the ril.
+     */
+    int getRilVersion();
+   /**
+     * Sets user selected subscription at Modem.
+     *
+     * @param slotId
+     *          Slot.
+     * @param appIndex
+     *          Application index in the card.
+     * @param subId
+     *          Indicates subscription 0 or subscription 1.
+     * @param subStatus
+     *          Activation status, 1 = activate and 0 = deactivate.
+     * @param result
+     *          Callback message contains the information of SUCCESS/FAILURE.
+     */
+    public void setUiccSubscription(int slotId, int appIndex, int subId, int subStatus,
+            Message result);
+
+    /**
+     * Set Data Subscription preference at Modem.
+     *
+     * @param result
+     *          Callback message contains the information of SUCCESS/FAILURE.
+     */
+    public void setDataSubscription (Message result);
+
+    /**
+     * Request to enable or disable the tune away state.
+     * @param tuneAway true to enable, false to disable
+     * @param response is callback message
+     */
+    void setTuneAway(boolean tuneAway, Message response);
+
+    /**
+     * Sets the provided subIndex as priority subscription index.
+     * @param subIndex Subscription index
+     * @param response is callback message
+     */
+    void setPrioritySub(int subIndex, Message response);
+
+    /**
+     * Set the default voice subscription id.
+     * @param subIndex subscription index
+     * @param response is callback message
+     */
+    void setDefaultVoiceSub(int subIndex, Message response);
+
+    /**
+     * Request to update the current local call hold state.
+     * @param lchStatus, true if call is in lch state
+     * @param response is callback message
+     */
+    void setLocalCallHold(int lchStatus, Message response);
 }
